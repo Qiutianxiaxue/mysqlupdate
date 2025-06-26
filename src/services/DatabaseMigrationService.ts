@@ -230,7 +230,8 @@ export class DatabaseMigrationService {
         await this.migrateTimePartitionedTableWithConfig(
           connection,
           tableDefinition,
-          schema
+          schema,
+          enterprise
         );
       } else {
         await this.migrateTableWithConnection(connection, tableDefinition);
@@ -304,22 +305,25 @@ export class DatabaseMigrationService {
   private async migrateTimePartitionedTableWithConfig(
     connection: Sequelize,
     tableDefinition: TableDefinition,
-    schema: TableSchema
+    schema: TableSchema,
+    enterprise: Enterprise
   ): Promise<void> {
     // 获取时间分区配置
     const interval = schema.time_interval || "month";
-    const startDate = schema.time_start_date || new Date();
-    const endDate =
-      schema.time_end_date ||
-      (() => {
-        const now = new Date();
-        const defaultEnd = new Date(now);
-        // 默认结束时间：当前时间后一年
-        defaultEnd.setFullYear(now.getFullYear() + 1);
-        return defaultEnd;
-      })();
+
+    // 使用企业创建时间作为开始时间，如果企业没有创建时间则使用当前时间
+    const startDate = enterprise.create_time || new Date();
+
+    // 结束时间固定为当前时间，确保至少包含当前时间的分区
+    const endDate = new Date();
 
     logger.info(`🕒 开始时间分区表迁移:`);
+    logger.info(
+      `   - 企业: ${enterprise.enterprise_name} (${enterprise.enterprise_id})`
+    );
+    logger.info(
+      `   - 企业创建时间: ${enterprise.create_time?.toISOString() || "未设置"}`
+    );
     logger.info(`   - 分区间隔: ${interval}`);
     logger.info(`   - 开始时间: ${startDate.toISOString()}`);
     logger.info(`   - 结束时间: ${endDate.toISOString()}`);
@@ -347,8 +351,10 @@ export class DatabaseMigrationService {
     timeFormat?: string
   ): Promise<void> {
     const currentDate = new Date(startDate);
+    let createdCount = 0;
 
-    while (currentDate <= endDate) {
+    // 修改循环条件：确保至少执行一次，即使开始时间和结束时间相同
+    do {
       const timeSuffix = this.formatDateForTable(
         currentDate,
         interval,
@@ -360,6 +366,11 @@ export class DatabaseMigrationService {
         timeSuffix
       );
 
+      createdCount++;
+      logger.info(
+        `   ✅ 已创建分区表: ${tableDefinition.tableName}${timeSuffix}`
+      );
+
       // 移动到下一个时间间隔
       if (interval === "day") {
         currentDate.setDate(currentDate.getDate() + 1);
@@ -368,7 +379,9 @@ export class DatabaseMigrationService {
       } else {
         currentDate.setFullYear(currentDate.getFullYear() + 1);
       }
-    }
+    } while (currentDate <= endDate);
+
+    logger.info(`   🎉 时间分区表创建完成，共创建 ${createdCount} 个分区表`);
   }
 
   /**

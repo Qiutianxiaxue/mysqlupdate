@@ -10,8 +10,6 @@ export interface TableSchemaAttributes {
   partition_type: "store" | "time" | "none"; // 分表类型
   // 时间分区相关配置
   time_interval?: "day" | "month" | "year"; // 时间分区间隔：天、月、年
-  time_start_date?: Date; // 时间分区开始日期
-  time_end_date?: Date; // 时间分区结束日期（可选）
   time_format?: string; // 时间分区表名格式，如：_YYYY_MM、_YYYY_MM_DD、_YYYY
   schema_version: string; // 表结构版本
   schema_definition: string; // JSON格式的表结构定义
@@ -36,8 +34,6 @@ class TableSchema extends Model<
   public partition_type!: "store" | "time" | "none";
   // 时间分区相关配置
   public time_interval?: "day" | "month" | "year";
-  public time_start_date?: Date;
-  public time_end_date?: Date;
   public time_format?: string;
   public schema_version!: string;
   public schema_definition!: string;
@@ -85,16 +81,7 @@ TableSchema.init(
       allowNull: true,
       comment: "时间分区间隔：day-按天，month-按月，year-按年",
     },
-    time_start_date: {
-      type: DataTypes.DATE,
-      allowNull: true,
-      comment: "时间分区开始日期",
-    },
-    time_end_date: {
-      type: DataTypes.DATE,
-      allowNull: true,
-      comment: "时间分区结束日期（可选）",
-    },
+
     time_format: {
       type: DataTypes.STRING(50),
       allowNull: true,

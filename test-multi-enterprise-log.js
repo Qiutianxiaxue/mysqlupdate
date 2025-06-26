@@ -14,17 +14,15 @@ async function testMultiEnterpriseLogTable() {
     // 3. 创建log表的表结构定义
     console.log("\n3️⃣ 创建log表结构定义（用户操作日志表）...");
     const logTableSchema = {
-      table_name: "user_operation_logs2",
+      table_name: "user_operation_logs3",
       database_type: "log",
       partition_type: "time",
       // 时间分区配置
       time_interval: "month", // 按月分区
-      time_start_date: "2024-01-01", // 开始时间
-      time_end_date: "2025-12-31", // 结束时间
       time_format: "YYYYMM", // 自定义格式，如：user_operation_logs2_2024_12
-      schema_version: "1.2.29",
+      schema_version: "1.2.32",
       schema_definition: JSON.stringify({
-        tableName: "user_operation_logs2",
+        tableName: "user_operation_logs3",
         columns: [
           {
             name: "id",
@@ -131,7 +129,7 @@ async function testMultiEnterpriseLogTable() {
     console.log("✅ log表结构定义创建成功");
 
     const migrateResponse = await axios.post(`${BASE_URL}/execute`, {
-      table_name: "user_operation_logs2",
+      table_name: "user_operation_logs3",
       database_type: "log",
       partition_type: "time",
     });

@@ -72,8 +72,6 @@ export class MigrationController {
         partition_type,
         // 时间分区相关字段
         time_interval,
-        time_start_date,
-        time_end_date,
         time_format,
         schema_version,
         schema_definition,
@@ -171,14 +169,6 @@ export class MigrationController {
           createData.time_interval =
             time_interval || existingSchema.time_interval;
         }
-        if (time_start_date || existingSchema.time_start_date) {
-          createData.time_start_date =
-            time_start_date || existingSchema.time_start_date;
-        }
-        if (time_end_date || existingSchema.time_end_date) {
-          createData.time_end_date =
-            time_end_date || existingSchema.time_end_date;
-        }
         if (time_format || existingSchema.time_format) {
           createData.time_format = time_format || existingSchema.time_format;
         }
@@ -206,8 +196,6 @@ export class MigrationController {
 
         // 添加时间分区相关字段（仅在提供时添加）
         if (time_interval) createData.time_interval = time_interval;
-        if (time_start_date) createData.time_start_date = time_start_date;
-        if (time_end_date) createData.time_end_date = time_end_date;
         if (time_format) createData.time_format = time_format;
 
         schema = await TableSchema.create(createData);
