@@ -17,7 +17,7 @@ async function testMultiEnterpriseLogTable() {
       table_name: "user_operation_logs2",
       database_type: "log",
       partition_type: "time",
-      schema_version: "1.2.25",
+      schema_version: "1.2.26",
       schema_definition: JSON.stringify({
         tableName: "user_operation_logs2",
         columns: [

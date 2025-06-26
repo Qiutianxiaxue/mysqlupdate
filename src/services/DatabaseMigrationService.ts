@@ -837,15 +837,24 @@ export class DatabaseMigrationService {
             `🔄 更新列 ${columnName} 的属性: ${updateReasons.join(", ")}`
           );
 
-          // 构建ALTER COLUMN语句
+          // 分步处理主键变更
+          await this.handlePrimaryKeyChanges(
+            connection,
+            tableName,
+            columnName,
+            currentIsPrimaryKey,
+            expectedIsPrimaryKey
+          );
+
+          // 构建ALTER COLUMN语句（不包含PRIMARY KEY，因为已单独处理）
           let columnDefinition = `${definedColumn.name} ${this.getDataType(
             definedColumn
           )}`;
 
-          // 添加主键和自增属性（顺序很重要）
-          if (definedColumn.primaryKey) columnDefinition += " PRIMARY KEY";
-          if (definedColumn.autoIncrement)
+          // 添加自增属性
+          if (definedColumn.autoIncrement) {
             columnDefinition += " AUTO_INCREMENT";
+          }
 
           if (!definedColumn.allowNull) {
             columnDefinition += " NOT NULL";
@@ -877,6 +886,42 @@ export class DatabaseMigrationService {
       } else {
         logger.info(`✓ 列 ${columnName} 的属性无需更新`);
       }
+    }
+  }
+
+  /**
+   * 处理主键变更（添加或移除主键）
+   */
+  private async handlePrimaryKeyChanges(
+    connection: Sequelize,
+    tableName: string,
+    columnName: string,
+    currentIsPrimaryKey: boolean,
+    expectedIsPrimaryKey: boolean
+  ): Promise<void> {
+    if (currentIsPrimaryKey === expectedIsPrimaryKey) {
+      return; // 无需变更
+    }
+
+    try {
+      if (currentIsPrimaryKey && !expectedIsPrimaryKey) {
+        // 移除主键
+        logger.info(`🔄 移除表 ${tableName} 列 ${columnName} 的主键约束`);
+        const dropPrimaryKeySQL = `ALTER TABLE ${tableName} DROP PRIMARY KEY`;
+        logger.info(`执行SQL: ${dropPrimaryKeySQL}`);
+        await connection.query(dropPrimaryKeySQL);
+        logger.info(`✅ 成功移除主键约束`);
+      } else if (!currentIsPrimaryKey && expectedIsPrimaryKey) {
+        // 添加主键
+        logger.info(`🔄 为表 ${tableName} 列 ${columnName} 添加主键约束`);
+        const addPrimaryKeySQL = `ALTER TABLE ${tableName} ADD PRIMARY KEY (${columnName})`;
+        logger.info(`执行SQL: ${addPrimaryKeySQL}`);
+        await connection.query(addPrimaryKeySQL);
+        logger.info(`✅ 成功添加主键约束`);
+      }
+    } catch (error) {
+      logger.error(`❌ 处理主键变更失败:`, error);
+      throw error; // 主键变更失败比较严重，抛出错误
     }
   }
 
