@@ -17,7 +17,7 @@ async function testMultiEnterpriseLogTable() {
       table_name: "user_operation_logs1",
       database_type: "log",
       partition_type: "none",
-      schema_version: "1.1.0",
+      schema_version: "1.2.4",
       schema_definition: JSON.stringify({
         tableName: "user_operation_logs1",
         columns: [
@@ -27,7 +27,7 @@ async function testMultiEnterpriseLogTable() {
             primaryKey: true,
             autoIncrement: true,
             allowNull: false,
-            comment: "主键ID",
+            comment: "主键ID111",
           },
           {
             name: "user_id",
@@ -105,11 +105,6 @@ async function testMultiEnterpriseLogTable() {
             comment: "表名和记录ID组合索引",
           },
           {
-            name: "idx_created_at",
-            fields: ["created_at"],
-            comment: "创建时间索引，便于日志查询",
-          },
-          {
             name: "idx_user_time",
             fields: ["user_id", "created_at"],
             comment: "用户时间组合索引，便于查询用户操作历史",
@@ -118,17 +113,16 @@ async function testMultiEnterpriseLogTable() {
       }),
     };
 
-    // const schemaResponse = await axios.post(
-    //   `${BASE_URL}/schemas/create`,
-    //   logTableSchema,
-    //   {
-    //     headers: {
-    //       "Content-Type": "application/json",
-    //     },
-    //   }
-    // );
-    // console.log("✅ log表结构定义创建成功，ID:", schemaResponse.data.data.id);
-    // const schemaId = schemaResponse.data.data.id;
+    const schemaResponse = await axios.post(
+      `${BASE_URL}/schemas/create`,
+      logTableSchema,
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log("✅ log表结构定义创建成功");
 
     const migrateResponse = await axios.post(`${BASE_URL}/execute`, {
       table_name: "user_operation_logs1",

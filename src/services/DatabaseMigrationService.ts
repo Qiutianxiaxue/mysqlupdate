@@ -346,7 +346,7 @@ export class DatabaseMigrationService {
   }
 
   /**
-   * 统一的表升级方法（无论表是否存在）
+   * 统一的表升级方法（支持增删改）
    */
   async upgradeTableWithConnection(
     connection: Sequelize,
@@ -377,43 +377,283 @@ export class DatabaseMigrationService {
       logger.info(`表 ${tableName} 存在，执行升级操作`);
 
       // 获取现有表的列信息
-      const [existingColumns] = await connection.query(
-        "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ORDINAL_POSITION",
-        {
-          replacements: [tableName],
-          type: "SELECT",
-        }
-      );
+      try {
+        const [existingColumnsResult] = await connection.query(
+          "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ORDINAL_POSITION",
+          {
+            replacements: [tableName],
+            type: "SELECT",
+          }
+        );
 
-      const existingColumnNames = ((existingColumns as any[]) || []).map(
-        (col) => col.COLUMN_NAME
-      );
+        logger.info(`查询现有列的原始结果类型:`, typeof existingColumnsResult);
 
-      logger.info(`现有列: ${existingColumnNames.join(", ")}`);
-
-      // 添加新列
-      for (const column of tableDefinition.columns) {
-        if (!existingColumnNames.includes(column.name)) {
-          logger.info(`添加新列: ${column.name}`);
-          await this.addColumnWithConnection(connection, tableName, column);
+        // 确保结果是数组格式
+        let existingColumns: any[] = [];
+        if (Array.isArray(existingColumnsResult)) {
+          existingColumns = existingColumnsResult;
+        } else if (
+          existingColumnsResult &&
+          typeof existingColumnsResult === "object"
+        ) {
+          existingColumns = Object.values(existingColumnsResult);
         } else {
-          logger.info(`列 ${column.name} 已存在，跳过`);
+          logger.warn(`意外的查询结果格式，将作为空数组处理`);
+          existingColumns = [];
         }
-      }
 
-      // 更新索引
-      if (tableDefinition.indexes) {
-        await this.updateIndexesWithConnection(
+        const existingColumnNames = existingColumns.map(
+          (col) => col.COLUMN_NAME
+        );
+        const definedColumnNames = tableDefinition.columns.map(
+          (col) => col.name
+        );
+
+        logger.info(`现有列名列表: [${existingColumnNames.join(", ")}]`);
+        logger.info(`定义列名列表: [${definedColumnNames.join(", ")}]`);
+
+        // 1. 删除不再需要的列（但保留主键和特殊列）
+        await this.removeUnwantedColumns(
           connection,
           tableName,
-          tableDefinition.indexes
+          existingColumns,
+          definedColumnNames
         );
-      }
 
-      logger.info(`表 ${tableName} 升级完成`);
+        // 2. 添加新列
+        await this.addMissingColumns(
+          connection,
+          tableName,
+          tableDefinition.columns,
+          existingColumnNames
+        );
+
+        // 3. 同步索引（删除不需要的，添加缺失的）
+        await this.synchronizeIndexes(
+          connection,
+          tableName,
+          tableDefinition.indexes || []
+        );
+
+        logger.info(`✅ 表 ${tableName} 升级完成`);
+      } catch (columnQueryError) {
+        logger.error(`查询表 ${tableName} 的列信息失败:`, columnQueryError);
+
+        // 备用方案：使用DESCRIBE命令
+        try {
+          logger.info(`尝试使用DESCRIBE命令获取列信息...`);
+          const [describeResult] = await connection.query(
+            `DESCRIBE ${tableName}`
+          );
+
+          let columns: any[] = [];
+          if (Array.isArray(describeResult)) {
+            columns = describeResult;
+          } else {
+            columns = Object.values(describeResult);
+          }
+
+          const existingColumnNames = columns.map((col) => col.Field);
+          const definedColumnNames = tableDefinition.columns.map(
+            (col) => col.name
+          );
+
+          logger.info(
+            `通过DESCRIBE获取的列名: [${existingColumnNames.join(", ")}]`
+          );
+
+          // 删除不再需要的列
+          await this.removeUnwantedColumns(
+            connection,
+            tableName,
+            columns,
+            definedColumnNames
+          );
+
+          // 添加新列
+          await this.addMissingColumns(
+            connection,
+            tableName,
+            tableDefinition.columns,
+            existingColumnNames
+          );
+
+          // 同步索引
+          await this.synchronizeIndexes(
+            connection,
+            tableName,
+            tableDefinition.indexes || []
+          );
+        } catch (describeError) {
+          logger.error(`DESCRIBE命令也失败了:`, describeError);
+          throw new Error(
+            `无法获取表 ${tableName} 的列信息: ${
+              (columnQueryError as Error).message || "未知错误"
+            }`
+          );
+        }
+      }
     } catch (error) {
       logger.error(`升级表 ${tableName} 时出错:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * 删除不再需要的列
+   */
+  private async removeUnwantedColumns(
+    connection: Sequelize,
+    tableName: string,
+    existingColumns: any[],
+    definedColumnNames: string[]
+  ): Promise<void> {
+    logger.info(`🗑️ 检查需要删除的列...`);
+
+    for (const existingCol of existingColumns) {
+      const columnName = existingCol.COLUMN_NAME || existingCol.Field;
+      const columnKey = existingCol.COLUMN_KEY || existingCol.Key;
+
+      // 跳过主键列，避免误删
+      if (columnKey === "PRI" || columnKey === "PRIMARY") {
+        logger.info(`跳过主键列: ${columnName}`);
+        continue;
+      }
+
+      // 如果列在新定义中不存在，则删除
+      if (!definedColumnNames.includes(columnName)) {
+        try {
+          logger.info(`🗑️ 删除不再需要的列: ${columnName}`);
+          const dropSQL = `ALTER TABLE ${tableName} DROP COLUMN ${columnName}`;
+          logger.info(`执行SQL: ${dropSQL}`);
+          await connection.query(dropSQL);
+          logger.info(`✅ 成功删除列: ${columnName}`);
+        } catch (error) {
+          logger.error(`❌ 删除列 ${columnName} 失败:`, error);
+          // 删除列失败不中断迁移，继续处理其他列
+        }
+      } else {
+        logger.info(`✓ 列 ${columnName} 在新定义中存在，保留`);
+      }
+    }
+  }
+
+  /**
+   * 添加缺失的列
+   */
+  private async addMissingColumns(
+    connection: Sequelize,
+    tableName: string,
+    definedColumns: ColumnDefinition[],
+    existingColumnNames: string[]
+  ): Promise<void> {
+    logger.info(`➕ 检查需要添加的新列...`);
+
+    for (const column of definedColumns) {
+      if (!existingColumnNames.includes(column.name)) {
+        logger.info(`➕ 发现新列，准备添加: ${column.name}`);
+        await this.addColumnWithConnection(connection, tableName, column);
+      } else {
+        logger.info(`✓ 列 ${column.name} 已存在，跳过添加`);
+      }
+    }
+  }
+
+  /**
+   * 同步索引（删除不需要的，添加缺失的）
+   */
+  private async synchronizeIndexes(
+    connection: Sequelize,
+    tableName: string,
+    definedIndexes: Array<{ name: string; fields: string[]; unique?: boolean }>
+  ): Promise<void> {
+    try {
+      logger.info(`🔄 开始同步表 ${tableName} 的索引...`);
+
+      // 获取现有索引
+      const [showIndexResult] = await connection.query(
+        `SHOW INDEX FROM ${tableName}`
+      );
+
+      let indexData: any[] = [];
+      if (Array.isArray(showIndexResult)) {
+        indexData = showIndexResult;
+      } else if (showIndexResult && typeof showIndexResult === "object") {
+        indexData = Object.values(showIndexResult);
+      }
+
+      // 提取现有索引名（去重，排除主键）
+      const existingIndexNames = [
+        ...new Set(
+          indexData
+            .filter((idx) => idx.Key_name !== "PRIMARY")
+            .map((idx) => idx.Key_name)
+        ),
+      ];
+
+      const definedIndexNames = definedIndexes.map((idx) => idx.name);
+
+      logger.info(`现有索引: [${existingIndexNames.join(", ")}]`);
+      logger.info(`定义索引: [${definedIndexNames.join(", ")}]`);
+
+      // 1. 删除不再需要的索引
+      for (const existingIndexName of existingIndexNames) {
+        if (!definedIndexNames.includes(existingIndexName)) {
+          try {
+            logger.info(`🗑️ 删除不再需要的索引: ${existingIndexName}`);
+            const dropSQL = `DROP INDEX ${existingIndexName} ON ${tableName}`;
+            logger.info(`执行SQL: ${dropSQL}`);
+            await connection.query(dropSQL);
+            logger.info(`✅ 成功删除索引: ${existingIndexName}`);
+          } catch (error) {
+            logger.error(`❌ 删除索引 ${existingIndexName} 失败:`, error);
+            // 删除索引失败不中断迁移
+          }
+        } else {
+          logger.info(`✓ 索引 ${existingIndexName} 在新定义中存在，保留`);
+        }
+      }
+
+      // 2. 添加缺失的索引
+      for (const index of definedIndexes) {
+        const indexExists = existingIndexNames.some(
+          (existingName) =>
+            existingName.toLowerCase() === index.name.toLowerCase()
+        );
+
+        if (!indexExists) {
+          try {
+            logger.info(`➕ 添加新索引: ${index.name}`);
+            const unique = index.unique ? "UNIQUE" : "";
+            const sql = `CREATE ${unique} INDEX ${
+              index.name
+            } ON ${tableName} (${index.fields.join(", ")})`;
+            logger.info(`执行SQL: ${sql}`);
+            await connection.query(sql);
+            logger.info(`✅ 成功创建索引: ${index.name}`);
+          } catch (indexError) {
+            logger.warn(`⚠️ 创建索引 ${index.name} 失败:`, indexError);
+
+            if (indexError instanceof Error) {
+              const errorMessage = indexError.message.toLowerCase();
+              if (
+                errorMessage.includes("duplicate key name") ||
+                errorMessage.includes("already exists") ||
+                errorMessage.includes("duplicate index name")
+              ) {
+                logger.info(`索引 ${index.name} 实际上已存在，跳过创建`);
+              }
+            }
+          }
+        } else {
+          logger.info(`✓ 索引 ${index.name} 已存在，跳过创建`);
+        }
+      }
+
+      logger.info(`✅ 表 ${tableName} 索引同步完成`);
+    } catch (error) {
+      logger.error(`同步表 ${tableName} 索引时出错:`, error);
+      logger.warn(`⚠️ 索引同步失败，但表迁移继续进行`);
     }
   }
 
@@ -450,59 +690,6 @@ export class DatabaseMigrationService {
         return;
       }
       throw error;
-    }
-  }
-
-  /**
-   * 更新索引（使用指定连接）
-   */
-  private async updateIndexesWithConnection(
-    connection: Sequelize,
-    tableName: string,
-    indexes: Array<{ name: string; fields: string[]; unique?: boolean }>
-  ): Promise<void> {
-    try {
-      // 获取现有索引
-      const [existingIndexes] = await connection.query(
-        "SELECT DISTINCT INDEX_NAME FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND INDEX_NAME != 'PRIMARY'",
-        {
-          replacements: [tableName],
-          type: "SELECT",
-        }
-      );
-
-      const existingIndexNames = ((existingIndexes as any[]) || []).map(
-        (idx) => idx.INDEX_NAME
-      );
-
-      logger.info(`表 ${tableName} 现有索引: ${existingIndexNames.join(", ")}`);
-
-      // 只添加不存在的索引
-      for (const index of indexes) {
-        if (!existingIndexNames.includes(index.name)) {
-          try {
-            const unique = index.unique ? "UNIQUE" : "";
-            const sql = `CREATE ${unique} INDEX ${
-              index.name
-            } ON ${tableName} (${index.fields.join(", ")})`;
-            logger.info(`创建索引: ${sql}`);
-            await connection.query(sql);
-            logger.info(`为表 ${tableName} 创建索引 ${index.name} 成功`);
-          } catch (indexError) {
-            logger.warn(
-              `为表 ${tableName} 创建索引 ${index.name} 失败:`,
-              indexError
-            );
-            // 索引创建失败不应该中断整个迁移过程
-          }
-        } else {
-          logger.info(`索引 ${index.name} 已存在，跳过创建`);
-        }
-      }
-    } catch (error) {
-      logger.error(`更新表 ${tableName} 的索引时出错:`, error);
-      // 索引更新失败不应该中断迁移，只记录警告
-      logger.warn(`索引更新失败，但表迁移继续进行`);
     }
   }
 
