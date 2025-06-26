@@ -17,7 +17,12 @@ async function testMultiEnterpriseLogTable() {
       table_name: "user_operation_logs2",
       database_type: "log",
       partition_type: "time",
-      schema_version: "1.2.26",
+      // 时间分区配置
+      time_interval: "month", // 按月分区
+      time_start_date: "2024-01-01", // 开始时间
+      time_end_date: "2025-12-31", // 结束时间
+      time_format: "YYYYMM", // 自定义格式，如：user_operation_logs2_2024_12
+      schema_version: "1.2.29",
       schema_definition: JSON.stringify({
         tableName: "user_operation_logs2",
         columns: [
@@ -34,7 +39,7 @@ async function testMultiEnterpriseLogTable() {
             type: "BIGINT",
             allowNull: true,
             defaultValue: "12221",
-            comment: "用户ID",
+            comment: "用户2222ID",
           },
           {
             name: "user_id22",

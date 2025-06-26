@@ -98,7 +98,7 @@ const testData = {
     table_name: "orders",
     database_type: "order",
     partition_type: "store",
-    partition_key: "store_id",
+
     schema_version: "1.0.0",
     schema_definition: JSON.stringify({
       tableName: "orders",
@@ -190,7 +190,11 @@ const testData = {
     table_name: "system_logs",
     database_type: "log",
     partition_type: "time",
-    partition_key: "created_at",
+    // 时间分区配置
+    time_interval: "month",
+    time_start_date: "2024-01-01",
+    time_end_date: "2024-12-31",
+    time_format: "_YYYY_MM",
     schema_version: "1.0.0",
     schema_definition: JSON.stringify({
       tableName: "system_logs",

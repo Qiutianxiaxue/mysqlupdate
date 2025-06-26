@@ -70,7 +70,11 @@ export class MigrationController {
         database_type,
         store_id,
         partition_type,
-        partition_key,
+        // 时间分区相关字段
+        time_interval,
+        time_start_date,
+        time_end_date,
+        time_format,
         schema_version,
         schema_definition,
         upgrade_notes,
@@ -162,8 +166,21 @@ export class MigrationController {
           createData.store_id = existingSchema.store_id;
         }
 
-        if (existingSchema.partition_key) {
-          createData.partition_key = existingSchema.partition_key;
+        // 添加时间分区相关字段，优先使用请求中的新值，否则保留原有值
+        if (time_interval || existingSchema.time_interval) {
+          createData.time_interval =
+            time_interval || existingSchema.time_interval;
+        }
+        if (time_start_date || existingSchema.time_start_date) {
+          createData.time_start_date =
+            time_start_date || existingSchema.time_start_date;
+        }
+        if (time_end_date || existingSchema.time_end_date) {
+          createData.time_end_date =
+            time_end_date || existingSchema.time_end_date;
+        }
+        if (time_format || existingSchema.time_format) {
+          createData.time_format = time_format || existingSchema.time_format;
         }
 
         schema = await TableSchema.create(createData);
@@ -176,17 +193,24 @@ export class MigrationController {
         );
       } else {
         // 全新创建
-        schema = await TableSchema.create({
+        const createData: any = {
           table_name,
           database_type,
           store_id,
           partition_type,
-          partition_key,
           schema_version,
           schema_definition,
           is_active: true,
           upgrade_notes,
-        });
+        };
+
+        // 添加时间分区相关字段（仅在提供时添加）
+        if (time_interval) createData.time_interval = time_interval;
+        if (time_start_date) createData.time_start_date = time_start_date;
+        if (time_end_date) createData.time_end_date = time_end_date;
+        if (time_format) createData.time_format = time_format;
+
+        schema = await TableSchema.create(createData);
 
         logger.info(
           `新表定义创建成功: ${table_name} (${database_type}, ${partition_type}) 版本 ${schema_version}`

@@ -226,16 +226,11 @@ export class DatabaseMigrationService {
           schema.store_id
         );
       } else if (schema.partition_type === "time") {
-        // 时间分表逻辑
-        const now = new Date();
-        const startDate = new Date(now.getFullYear(), 0, 1);
-        const endDate = new Date(now.getFullYear(), 11, 31);
-        await this.migrateTimePartitionedTable(
+        // 时间分表逻辑 - 使用配置的时间分区设置
+        await this.migrateTimePartitionedTableWithConfig(
           connection,
           tableDefinition,
-          startDate,
-          endDate,
-          "month"
+          schema
         );
       } else {
         await this.migrateTableWithConnection(connection, tableDefinition);
@@ -304,6 +299,43 @@ export class DatabaseMigrationService {
   }
 
   /**
+   * 根据配置迁移时间分表
+   */
+  private async migrateTimePartitionedTableWithConfig(
+    connection: Sequelize,
+    tableDefinition: TableDefinition,
+    schema: TableSchema
+  ): Promise<void> {
+    // 获取时间分区配置
+    const interval = schema.time_interval || "month";
+    const startDate = schema.time_start_date || new Date();
+    const endDate =
+      schema.time_end_date ||
+      (() => {
+        const now = new Date();
+        const defaultEnd = new Date(now);
+        // 默认结束时间：当前时间后一年
+        defaultEnd.setFullYear(now.getFullYear() + 1);
+        return defaultEnd;
+      })();
+
+    logger.info(`🕒 开始时间分区表迁移:`);
+    logger.info(`   - 分区间隔: ${interval}`);
+    logger.info(`   - 开始时间: ${startDate.toISOString()}`);
+    logger.info(`   - 结束时间: ${endDate.toISOString()}`);
+    logger.info(`   - 时间格式: ${schema.time_format || "自动"}`);
+
+    await this.migrateTimePartitionedTable(
+      connection,
+      tableDefinition,
+      startDate,
+      endDate,
+      interval,
+      schema.time_format
+    );
+  }
+
+  /**
    * 迁移时间分表
    */
   private async migrateTimePartitionedTable(
@@ -311,12 +343,17 @@ export class DatabaseMigrationService {
     tableDefinition: TableDefinition,
     startDate: Date,
     endDate: Date,
-    interval: "month" | "year"
+    interval: "day" | "month" | "year",
+    timeFormat?: string
   ): Promise<void> {
     const currentDate = new Date(startDate);
 
     while (currentDate <= endDate) {
-      const timeSuffix = this.formatDateForTable(currentDate, interval);
+      const timeSuffix = this.formatDateForTable(
+        currentDate,
+        interval,
+        timeFormat
+      );
       await this.migrateTableWithConnection(
         connection,
         tableDefinition,
@@ -324,7 +361,9 @@ export class DatabaseMigrationService {
       );
 
       // 移动到下一个时间间隔
-      if (interval === "month") {
+      if (interval === "day") {
+        currentDate.setDate(currentDate.getDate() + 1);
+      } else if (interval === "month") {
         currentDate.setMonth(currentDate.getMonth() + 1);
       } else {
         currentDate.setFullYear(currentDate.getFullYear() + 1);
@@ -335,9 +374,9 @@ export class DatabaseMigrationService {
   /**
    * 获取分表后的表名
    */
-  private getTableName(baseTableName: string, storeId?: string): string {
-    if (storeId) {
-      return `${baseTableName}_${storeId}`;
+  private getTableName(baseTableName: string, suffix?: string): string {
+    if (suffix) {
+      return `${baseTableName}${suffix}`;
     }
     return baseTableName;
   }
@@ -1119,8 +1158,23 @@ export class DatabaseMigrationService {
   /**
    * 格式化日期用于表名
    */
-  private formatDateForTable(date: Date, interval: "month" | "year"): string {
-    if (interval === "month") {
+  private formatDateForTable(
+    date: Date,
+    interval: "day" | "month" | "year",
+    customFormat?: string
+  ): string {
+    // 如果提供了自定义格式，使用自定义格式
+    if (customFormat) {
+      return this.applyDateFormat(date, customFormat);
+    }
+
+    // 默认格式
+    if (interval === "day") {
+      return `${date.getFullYear()}_${String(date.getMonth() + 1).padStart(
+        2,
+        "0"
+      )}_${String(date.getDate()).padStart(2, "0")}`;
+    } else if (interval === "month") {
       return `${date.getFullYear()}_${String(date.getMonth() + 1).padStart(
         2,
         "0"
@@ -1128,6 +1182,30 @@ export class DatabaseMigrationService {
     } else {
       return `${date.getFullYear()}`;
     }
+  }
+
+  /**
+   * 应用自定义日期格式
+   * 支持的占位符：
+   * - YYYY: 四位年份
+   * - YY: 两位年份
+   * - MM: 两位月份
+   * - M: 一位或两位月份
+   * - DD: 两位日期
+   * - D: 一位或两位日期
+   */
+  private applyDateFormat(date: Date, format: string): string {
+    const year = date.getFullYear();
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+
+    return format
+      .replace(/YYYY/g, year.toString())
+      .replace(/YY/g, year.toString().slice(-2))
+      .replace(/MM/g, String(month).padStart(2, "0"))
+      .replace(/M/g, month.toString())
+      .replace(/DD/g, String(day).padStart(2, "0"))
+      .replace(/D/g, day.toString());
   }
 
   /**

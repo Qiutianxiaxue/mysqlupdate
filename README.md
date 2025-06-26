@@ -361,8 +361,7 @@ node test-unified-migration.js
 {
   "table_name": "orders",
   "database_type": "order",
-  "partition_type": "store",
-  "partition_key": "store_id"
+  "partition_type": "store"
 }
 ```
 
@@ -373,7 +372,10 @@ node test-unified-migration.js
   "table_name": "system_logs",
   "database_type": "log",
   "partition_type": "time",
-  "partition_key": "created_at"
+  "time_interval": "month",
+  "time_start_date": "2024-01-01",
+  "time_end_date": "2024-12-31",
+  "time_format": "_YYYY_MM"
 }
 ```
 
