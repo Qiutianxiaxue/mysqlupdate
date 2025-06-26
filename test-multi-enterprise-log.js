@@ -16,8 +16,8 @@ async function testMultiEnterpriseLogTable() {
     const logTableSchema = {
       table_name: "user_operation_logs1",
       database_type: "log",
-      partition_type: "none",
-      schema_version: "1.2.4",
+      partition_type: "time",
+      schema_version: "1.2.19",
       schema_definition: JSON.stringify({
         tableName: "user_operation_logs1",
         columns: [
@@ -32,7 +32,8 @@ async function testMultiEnterpriseLogTable() {
           {
             name: "user_id",
             type: "BIGINT",
-            allowNull: false,
+            allowNull: true,
+            defaultValue: "11",
             comment: "用户ID",
           },
           {

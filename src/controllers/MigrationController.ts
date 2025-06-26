@@ -12,6 +12,55 @@ export class MigrationController {
   }
 
   /**
+   * 比较语义化版本号，判断新版本是否大于旧版本
+   * @param newVersion 新版本号 (如 "1.2.19")
+   * @param oldVersion 旧版本号 (如 "1.2.9")
+   * @returns 新版本是否大于旧版本
+   */
+  private isVersionGreater(newVersion: string, oldVersion: string): boolean {
+    try {
+      // 处理版本号格式，支持 "1.2.3" 或 "v1.2.3" 格式
+      const cleanNew = newVersion.replace(/^v/, "");
+      const cleanOld = oldVersion.replace(/^v/, "");
+
+      // 分割版本号并转换为数字数组
+      const newParts = cleanNew.split(".").map((part) => {
+        const num = parseInt(part, 10);
+        return isNaN(num) ? 0 : num;
+      });
+
+      const oldParts = cleanOld.split(".").map((part) => {
+        const num = parseInt(part, 10);
+        return isNaN(num) ? 0 : num;
+      });
+
+      // 确保两个版本号都有至少3个部分 (major.minor.patch)
+      while (newParts.length < 3) newParts.push(0);
+      while (oldParts.length < 3) oldParts.push(0);
+
+      // 逐级比较：major -> minor -> patch
+      for (let i = 0; i < Math.max(newParts.length, oldParts.length); i++) {
+        const newPart = newParts[i] || 0;
+        const oldPart = oldParts[i] || 0;
+
+        if (newPart > oldPart) {
+          return true; // 新版本更大
+        } else if (newPart < oldPart) {
+          return false; // 新版本更小
+        }
+        // 如果相等，继续比较下一级
+      }
+
+      // 完全相等
+      return false;
+    } catch (error) {
+      logger.error(`版本号比较失败: ${newVersion} vs ${oldVersion}`, error);
+      // 出错时回退到字符串比较
+      return newVersion > oldVersion;
+    }
+  }
+
+  /**
    * 创建或更新表结构定义
    */
   async createTableSchema(req: Request, res: Response): Promise<void> {
@@ -87,7 +136,9 @@ export class MigrationController {
 
       if (existingSchema) {
         // 如果存在激活状态的表定义，检查版本号
-        if (schema_version <= existingSchema.schema_version) {
+        if (
+          !this.isVersionGreater(schema_version, existingSchema.schema_version)
+        ) {
           res.status(400).json({
             success: false,
             message: `表定义 ${table_name} (${database_type}, ${partition_type}) 已存在，新版本号 ${schema_version} 必须大于当前版本号 ${existingSchema.schema_version}`,

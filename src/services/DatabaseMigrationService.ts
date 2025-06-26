@@ -428,7 +428,15 @@ export class DatabaseMigrationService {
           existingColumnNames
         );
 
-        // 3. 同步索引（删除不需要的，添加缺失的）
+        // 3. 更新现有列的属性（comment、类型、默认值等）
+        await this.updateExistingColumns(
+          connection,
+          tableName,
+          existingColumns,
+          tableDefinition.columns
+        );
+
+        // 4. 同步索引（删除不需要的，添加缺失的）
         await this.synchronizeIndexes(
           connection,
           tableName,
@@ -439,7 +447,7 @@ export class DatabaseMigrationService {
       } catch (columnQueryError) {
         logger.error(`查询表 ${tableName} 的列信息失败:`, columnQueryError);
 
-        // 备用方案：使用DESCRIBE命令
+        // 备用方案：使用DESCRIBE命令和单独的comment查询
         try {
           logger.info(`尝试使用DESCRIBE命令获取列信息...`);
           const [describeResult] = await connection.query(
@@ -451,6 +459,43 @@ export class DatabaseMigrationService {
             columns = describeResult;
           } else {
             columns = Object.values(describeResult);
+          }
+
+          // 获取comment信息（DESCRIBE不包含comment，需要单独查询）
+          logger.info(`单独查询comment信息...`);
+          try {
+            const [commentResult] = await connection.query(
+              "SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?",
+              { replacements: [tableName] }
+            );
+
+            let commentData: any[] = [];
+            if (Array.isArray(commentResult)) {
+              commentData = commentResult;
+            } else if (commentResult && typeof commentResult === "object") {
+              commentData = Object.values(commentResult);
+            }
+
+            // 将comment信息合并到columns中
+            for (const col of columns) {
+              const commentInfo = commentData.find(
+                (c) => c.COLUMN_NAME === col.Field
+              );
+              col.COLUMN_COMMENT = commentInfo
+                ? commentInfo.COLUMN_COMMENT
+                : "";
+            }
+
+            logger.info(`成功获取并合并comment信息`);
+          } catch (commentError) {
+            logger.warn(
+              `获取comment信息失败，将跳过comment更新:`,
+              commentError
+            );
+            // 如果comment查询失败，给所有列添加空comment
+            for (const col of columns) {
+              col.COLUMN_COMMENT = "";
+            }
           }
 
           const existingColumnNames = columns.map((col) => col.Field);
@@ -476,6 +521,14 @@ export class DatabaseMigrationService {
             tableName,
             tableDefinition.columns,
             existingColumnNames
+          );
+
+          // 更新现有列的属性
+          await this.updateExistingColumns(
+            connection,
+            tableName,
+            columns,
+            tableDefinition.columns
           );
 
           // 同步索引
@@ -557,6 +610,158 @@ export class DatabaseMigrationService {
         logger.info(`✓ 列 ${column.name} 已存在，跳过添加`);
       }
     }
+  }
+
+  /**
+   * 更新现有列的属性（comment、类型、默认值等）
+   */
+  private async updateExistingColumns(
+    connection: Sequelize,
+    tableName: string,
+    existingColumns: any[],
+    definedColumns: ColumnDefinition[]
+  ): Promise<void> {
+    logger.info(`🔄 检查需要更新属性的列...`);
+
+    for (const definedColumn of definedColumns) {
+      // 找到对应的现有列
+      const existingColumn = existingColumns.find(
+        (col) => (col.COLUMN_NAME || col.Field) === definedColumn.name
+      );
+
+      if (!existingColumn) {
+        // 列不存在，跳过（应该已经在addMissingColumns中处理了）
+        continue;
+      }
+
+      const columnName = existingColumn.COLUMN_NAME || existingColumn.Field;
+
+      // 详细调试信息：显示原始数据
+      logger.info(`🔍 检查列 ${columnName} 的现有属性:`);
+      logger.info(`  - COLUMN_COMMENT: "${existingColumn.COLUMN_COMMENT}"`);
+      logger.info(`  - Comment: "${existingColumn.Comment}"`);
+      logger.info(
+        `  - 原始对象keys: [${Object.keys(existingColumn).join(", ")}]`
+      );
+
+      // 获取当前comment，处理NULL和undefined情况
+      let currentComment =
+        existingColumn.COLUMN_COMMENT || existingColumn.Comment;
+      if (currentComment === null || currentComment === undefined) {
+        currentComment = "";
+      } else {
+        currentComment = String(currentComment).trim(); // 去除前后空格
+      }
+
+      const currentType = existingColumn.DATA_TYPE || existingColumn.Type || "";
+      const currentNullable =
+        (
+          existingColumn.IS_NULLABLE ||
+          existingColumn.Null ||
+          "YES"
+        ).toUpperCase() === "YES";
+      const currentDefault =
+        existingColumn.COLUMN_DEFAULT || existingColumn.Default;
+
+      logger.info(`  - 最终currentComment: "${currentComment}"`);
+      logger.info(`  - 期望comment: "${definedColumn.comment || ""}"`);
+
+      // 检查是否需要更新
+      let needsUpdate = false;
+      const updateReasons: string[] = [];
+
+      // 检查comment（标准化比较）
+      const expectedComment = (definedColumn.comment || "").trim();
+      if (currentComment !== expectedComment) {
+        needsUpdate = true;
+        updateReasons.push(
+          `comment: "${currentComment}" → "${expectedComment}"`
+        );
+      }
+
+      // 检查nullable
+      const expectedNullable = definedColumn.allowNull !== false;
+      if (currentNullable !== expectedNullable) {
+        needsUpdate = true;
+        updateReasons.push(
+          `nullable: ${currentNullable} → ${expectedNullable}`
+        );
+      }
+
+      // 检查默认值（简单比较）
+      const expectedDefault = definedColumn.defaultValue;
+      if (expectedDefault !== undefined && currentDefault !== expectedDefault) {
+        needsUpdate = true;
+        updateReasons.push(
+          `default: "${currentDefault}" → "${expectedDefault}"`
+        );
+      }
+
+      // 检查数据类型（简化的类型检查）
+      const expectedDataType = this.getDataType(definedColumn).toUpperCase();
+      const normalizedCurrentType = this.normalizeDataType(currentType);
+      const normalizedExpectedType = this.normalizeDataType(expectedDataType);
+
+      if (normalizedCurrentType !== normalizedExpectedType) {
+        needsUpdate = true;
+        updateReasons.push(
+          `type: ${normalizedCurrentType} → ${normalizedExpectedType}`
+        );
+      }
+
+      if (needsUpdate) {
+        try {
+          logger.info(
+            `🔄 更新列 ${columnName} 的属性: ${updateReasons.join(", ")}`
+          );
+
+          // 构建ALTER COLUMN语句
+          let alterSQL = `ALTER TABLE ${tableName} MODIFY COLUMN ${
+            definedColumn.name
+          } ${this.getDataType(definedColumn)}`;
+
+          if (!definedColumn.allowNull) {
+            alterSQL += " NOT NULL";
+          } else {
+            alterSQL += " NULL";
+          }
+
+          if (definedColumn.unique) {
+            alterSQL += " UNIQUE";
+          }
+
+          if (definedColumn.defaultValue !== undefined) {
+            alterSQL += this.getDefaultValue(definedColumn);
+          }
+
+          if (definedColumn.comment) {
+            alterSQL += ` COMMENT '${definedColumn.comment}'`;
+          }
+
+          logger.info(`执行SQL: ${alterSQL}`);
+          await connection.query(alterSQL);
+          logger.info(`✅ 成功更新列 ${columnName} 的属性`);
+        } catch (error) {
+          logger.error(`❌ 更新列 ${columnName} 属性失败:`, error);
+          // 更新列属性失败不中断迁移，继续处理其他列
+        }
+      } else {
+        logger.info(`✓ 列 ${columnName} 的属性无需更新`);
+      }
+    }
+  }
+
+  /**
+   * 标准化数据类型，用于比较
+   */
+  private normalizeDataType(dataType: string): string {
+    if (!dataType) return "";
+
+    return dataType
+      .toUpperCase()
+      .replace(/\([^)]*\)/g, "") // 移除括号中的长度/精度信息
+      .replace(/\s+/g, " ") // 标准化空格
+      .trim();
   }
 
   /**
