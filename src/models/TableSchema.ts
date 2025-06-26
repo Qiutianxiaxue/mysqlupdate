@@ -12,6 +12,7 @@ export interface TableSchemaAttributes {
   schema_version: string; // 表结构版本
   schema_definition: string; // JSON格式的表结构定义
   is_active: boolean; // 是否激活
+  upgrade_notes?: string; // 升级说明
   created_at: Date;
   updated_at: Date;
 }
@@ -33,6 +34,7 @@ class TableSchema extends Model<
   public schema_version!: string;
   public schema_definition!: string;
   public is_active!: boolean;
+  public upgrade_notes?: string;
   public readonly created_at!: Date;
   public readonly updated_at!: Date;
 }
@@ -47,7 +49,6 @@ TableSchema.init(
     table_name: {
       type: DataTypes.STRING(100),
       allowNull: false,
-      unique: true,
     },
     database_type: {
       type: DataTypes.ENUM("main", "log", "order", "static"),
@@ -81,6 +82,10 @@ TableSchema.init(
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: true,
+    },
+    upgrade_notes: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
     },
     created_at: {
       type: DataTypes.DATE,

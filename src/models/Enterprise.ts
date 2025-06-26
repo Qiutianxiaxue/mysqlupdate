@@ -87,13 +87,11 @@ Enterprise.init(
     enterprise_key: {
       type: DataTypes.STRING(255),
       allowNull: false,
-      unique: true,
       comment: "企业KEY",
     },
     enterprise_code: {
       type: DataTypes.INTEGER,
       allowNull: false,
-      unique: true,
       comment: "企业编号(六位数字编号)",
     },
     enterprise_name: {
@@ -110,7 +108,6 @@ Enterprise.init(
       type: DataTypes.STRING(255),
       allowNull: false,
       defaultValue: "enterprise",
-      unique: true,
       comment: "数据库名称",
     },
     database_hostname: {
@@ -256,6 +253,9 @@ Enterprise.init(
     tableName: "qc_enterprise",
     modelName: "Enterprise",
     timestamps: false, // 使用自定义的时间字段
+    // 暂时移除索引配置，避免重复创建索引的问题
+    // 索引将通过数据库迁移脚本手动管理
+    // indexes: []
   }
 );
 

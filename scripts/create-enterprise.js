@@ -1,7 +1,7 @@
 const axios = require("axios");
 
 // API基础URL
-const BASE_URL = "http://localhost:3000/api";
+const BASE_URL = "http://localhost:3000/api/migration";
 
 // 测试企业数据
 const testEnterprises = [
