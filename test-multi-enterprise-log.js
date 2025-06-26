@@ -14,26 +14,26 @@ async function testMultiEnterpriseLogTable() {
     // 3. 创建log表的表结构定义
     console.log("\n3️⃣ 创建log表结构定义（用户操作日志表）...");
     const logTableSchema = {
-      table_name: "user_operation_logs1",
+      table_name: "user_operation_logs2",
       database_type: "log",
       partition_type: "time",
-      schema_version: "1.2.23",
+      schema_version: "1.2.25",
       schema_definition: JSON.stringify({
-        tableName: "user_operation_logs1",
+        tableName: "user_operation_logs2",
         columns: [
           {
             name: "id",
             type: "BIGINT",
             primaryKey: true,
-            autoIncrement: true,
+            autoIncrement: false,
             allowNull: false,
-            comment: "主键ID111",
+            comment: "主键ID11222221",
           },
           {
             name: "user_id",
             type: "BIGINT",
             allowNull: true,
-            defaultValue: "11",
+            defaultValue: "12221",
             comment: "用户ID",
           },
           {
@@ -126,7 +126,7 @@ async function testMultiEnterpriseLogTable() {
     console.log("✅ log表结构定义创建成功");
 
     const migrateResponse = await axios.post(`${BASE_URL}/execute`, {
-      table_name: "user_operation_logs1",
+      table_name: "user_operation_logs2",
       database_type: "log",
       partition_type: "time",
     });

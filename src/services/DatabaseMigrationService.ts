@@ -758,6 +758,14 @@ export class DatabaseMigrationService {
         ).toUpperCase() === "YES";
       const currentDefault =
         existingColumn.COLUMN_DEFAULT || existingColumn.Default;
+      const currentKey = existingColumn.COLUMN_KEY || existingColumn.Key || "";
+      const currentExtra = existingColumn.EXTRA || existingColumn.Extra || "";
+
+      // 判断是否为主键和自增
+      const currentIsPrimaryKey = currentKey.toUpperCase() === "PRI";
+      const currentIsAutoIncrement = currentExtra
+        .toUpperCase()
+        .includes("AUTO_INCREMENT");
 
       logger.info(`  - 最终currentComment: "${currentComment}"`);
       logger.info(`  - 期望comment: "${definedColumn.comment || ""}"`);
@@ -805,6 +813,24 @@ export class DatabaseMigrationService {
         );
       }
 
+      // 检查主键属性
+      const expectedIsPrimaryKey = definedColumn.primaryKey === true;
+      if (currentIsPrimaryKey !== expectedIsPrimaryKey) {
+        needsUpdate = true;
+        updateReasons.push(
+          `primaryKey: ${currentIsPrimaryKey} → ${expectedIsPrimaryKey}`
+        );
+      }
+
+      // 检查自增属性
+      const expectedIsAutoIncrement = definedColumn.autoIncrement === true;
+      if (currentIsAutoIncrement !== expectedIsAutoIncrement) {
+        needsUpdate = true;
+        updateReasons.push(
+          `autoIncrement: ${currentIsAutoIncrement} → ${expectedIsAutoIncrement}`
+        );
+      }
+
       if (needsUpdate) {
         try {
           logger.info(
@@ -812,27 +838,34 @@ export class DatabaseMigrationService {
           );
 
           // 构建ALTER COLUMN语句
-          let alterSQL = `ALTER TABLE ${tableName} MODIFY COLUMN ${
-            definedColumn.name
-          } ${this.getDataType(definedColumn)}`;
+          let columnDefinition = `${definedColumn.name} ${this.getDataType(
+            definedColumn
+          )}`;
+
+          // 添加主键和自增属性（顺序很重要）
+          if (definedColumn.primaryKey) columnDefinition += " PRIMARY KEY";
+          if (definedColumn.autoIncrement)
+            columnDefinition += " AUTO_INCREMENT";
 
           if (!definedColumn.allowNull) {
-            alterSQL += " NOT NULL";
+            columnDefinition += " NOT NULL";
           } else {
-            alterSQL += " NULL";
+            columnDefinition += " NULL";
           }
 
           if (definedColumn.unique) {
-            alterSQL += " UNIQUE";
+            columnDefinition += " UNIQUE";
           }
 
           if (definedColumn.defaultValue !== undefined) {
-            alterSQL += this.getDefaultValue(definedColumn);
+            columnDefinition += this.getDefaultValue(definedColumn);
           }
 
           if (definedColumn.comment) {
-            alterSQL += ` COMMENT '${definedColumn.comment}'`;
+            columnDefinition += ` COMMENT '${definedColumn.comment}'`;
           }
+
+          let alterSQL = `ALTER TABLE ${tableName} MODIFY COLUMN ${columnDefinition}`;
 
           logger.info(`执行SQL: ${alterSQL}`);
           await connection.query(alterSQL);
@@ -967,15 +1000,19 @@ export class DatabaseMigrationService {
     column: ColumnDefinition
   ): Promise<void> {
     try {
-      const columnDefinition = `${column.name} ${this.getDataType(column)}`;
-      let alterSQL = `ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`;
+      let columnDefinition = `${column.name} ${this.getDataType(column)}`;
 
-      if (!column.allowNull) alterSQL += " NOT NULL";
-      if (column.unique) alterSQL += " UNIQUE";
+      // 添加主键和自增属性（顺序很重要）
+      if (column.primaryKey) columnDefinition += " PRIMARY KEY";
+      if (column.autoIncrement) columnDefinition += " AUTO_INCREMENT";
+      if (!column.allowNull) columnDefinition += " NOT NULL";
+      if (column.unique) columnDefinition += " UNIQUE";
       if (column.defaultValue !== undefined) {
-        alterSQL += this.getDefaultValue(column);
+        columnDefinition += this.getDefaultValue(column);
       }
-      if (column.comment) alterSQL += ` COMMENT '${column.comment}'`;
+      if (column.comment) columnDefinition += ` COMMENT '${column.comment}'`;
+
+      let alterSQL = `ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`;
 
       logger.info(`执行SQL: ${alterSQL}`);
       await connection.query(alterSQL);
