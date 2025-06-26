@@ -68,7 +68,6 @@ export class MigrationController {
       const {
         table_name,
         database_type,
-        store_id,
         partition_type,
         // 时间分区相关字段
         time_interval,
@@ -160,10 +159,6 @@ export class MigrationController {
           upgrade_notes: upgrade_notes || `自动升级到版本 ${schema_version}`,
         };
 
-        if (existingSchema.store_id) {
-          createData.store_id = existingSchema.store_id;
-        }
-
         // 添加时间分区相关字段，优先使用请求中的新值，否则保留原有值
         if (time_interval || existingSchema.time_interval) {
           createData.time_interval =
@@ -186,7 +181,6 @@ export class MigrationController {
         const createData: any = {
           table_name,
           database_type,
-          store_id,
           partition_type,
           schema_version,
           schema_definition,

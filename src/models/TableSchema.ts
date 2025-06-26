@@ -6,7 +6,6 @@ export interface TableSchemaAttributes {
   id: number;
   table_name: string;
   database_type: "main" | "log" | "order" | "static"; // 数据库类型
-  store_id?: string; // 门店ID，用于分表
   partition_type: "store" | "time" | "none"; // 分表类型
   // 时间分区相关配置
   time_interval?: "day" | "month" | "year"; // 时间分区间隔：天、月、年
@@ -30,7 +29,6 @@ class TableSchema extends Model<
   public id!: number;
   public table_name!: string;
   public database_type!: "main" | "log" | "order" | "static";
-  public store_id?: string;
   public partition_type!: "store" | "time" | "none";
   // 时间分区相关配置
   public time_interval?: "day" | "month" | "year";
@@ -63,11 +61,7 @@ TableSchema.init(
       comment:
         "数据库类型：main-主数据库，log-日志数据库，order-订单数据库，static-静态数据库",
     },
-    store_id: {
-      type: DataTypes.STRING(50),
-      allowNull: true,
-      comment: "门店ID，用于store类型分表时指定特定门店",
-    },
+
     partition_type: {
       type: DataTypes.ENUM("store", "time", "none"),
       allowNull: false,

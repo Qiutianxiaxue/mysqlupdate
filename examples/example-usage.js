@@ -81,7 +81,6 @@ const userTableSchema = {
 const orderTableSchema = {
   table_name: "orders",
   partition_type: "store",
-
   schema_version: "1.0.0",
   schema_definition: JSON.stringify({
     tableName: "orders",

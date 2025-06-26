@@ -219,11 +219,12 @@ export class DatabaseMigrationService {
       );
 
       // 根据分区类型处理
-      if (schema.partition_type === "store" && schema.store_id) {
-        await this.migrateTableWithConnection(
+      if (schema.partition_type === "store") {
+        // 门店分表逻辑 - 查询企业的所有门店并为每个门店创建分表
+        await this.migrateStorePartitionedTable(
           connection,
           tableDefinition,
-          schema.store_id
+          enterprise
         );
       } else if (schema.partition_type === "time") {
         // 时间分表逻辑 - 使用配置的时间分区设置
@@ -337,6 +338,85 @@ export class DatabaseMigrationService {
       interval,
       schema.time_format
     );
+  }
+
+  /**
+   * 迁移门店分表
+   */
+  private async migrateStorePartitionedTable(
+    connection: Sequelize,
+    tableDefinition: TableDefinition,
+    enterprise: Enterprise
+  ): Promise<void> {
+    try {
+      logger.info(`🏪 开始门店分表迁移:`);
+      logger.info(
+        `   - 企业: ${enterprise.enterprise_name} (${enterprise.enterprise_id})`
+      );
+
+      // 从企业主数据库查询所有门店
+      const mainConnection = await this.connectionManager.getConnection(
+        enterprise,
+        "main"
+      );
+
+      const stores = await this.queryStoreList(mainConnection);
+
+      if (stores.length === 0) {
+        logger.warn(
+          `   ⚠️ 企业 ${enterprise.enterprise_name} 没有找到任何门店，跳过门店分表`
+        );
+        return;
+      }
+
+      logger.info(`   - 找到 ${stores.length} 个门店，开始创建分表`);
+
+      let createdCount = 0;
+      for (const store of stores) {
+        const storeId = store.store_id || store.id;
+        await this.migrateTableWithConnection(
+          connection,
+          tableDefinition,
+          storeId.toString()
+        );
+
+        createdCount++;
+        logger.info(
+          `   ✅ 已创建门店分表: ${
+            tableDefinition.tableName
+          }${storeId} (门店: ${store.store_name || store.name || storeId})`
+        );
+      }
+
+      logger.info(`   🎉 门店分表创建完成，共创建 ${createdCount} 个门店分表`);
+    } catch (error) {
+      logger.error(`门店分表迁移失败:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 查询门店列表
+   */
+  private async queryStoreList(connection: Sequelize): Promise<any[]> {
+    try {
+      // 尝试不同的门店表名
+
+      const [results] = await connection.query(
+        `SELECT store_id,store_name FROM store WHERE status = 1`
+      );
+
+      if (Array.isArray(results) && results.length > 0) {
+        logger.info(`   - 从表 store 查询到 ${results.length} 个门店`);
+        return results;
+      }
+
+      // 如果所有常见表名都不存在，抛出错误
+      throw new Error(`未找到门店表`);
+    } catch (error) {
+      logger.error(`查询门店列表失败:`, error);
+      throw error;
+    }
   }
 
   /**
