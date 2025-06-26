@@ -357,7 +357,7 @@ export class MigrationController {
    */
   async executeMigration(req: Request, res: Response): Promise<void> {
     try {
-      const { table_name, database_type } = req.body;
+      const { table_name, database_type, partition_type } = req.body;
 
       if (!table_name || !database_type) {
         res.status(400).json({
@@ -376,20 +376,73 @@ export class MigrationController {
         return;
       }
 
-      // 查找该表的最新版本结构定义
-      const latestSchema = await TableSchema.findOne({
-        where: {
-          table_name,
-          database_type,
-          is_active: true,
-        },
-        order: [["schema_version", "DESC"]], // 获取最新版本
+      // 验证分区类型（如果提供）
+      if (
+        partition_type &&
+        !["store", "time", "none"].includes(partition_type)
+      ) {
+        res.status(400).json({
+          success: false,
+          message: "partition_type 必须是: store, time, none 之一",
+        });
+        return;
+      }
+
+      // 构建查询条件
+      const whereCondition: any = {
+        table_name,
+        database_type,
+        is_active: true,
+      };
+
+      // 如果指定了分区类型，添加到查询条件
+      if (partition_type) {
+        whereCondition.partition_type = partition_type;
+      }
+
+      // 查找表结构定义
+      const allSchemas = await TableSchema.findAll({
+        where: whereCondition,
+        order: [
+          ["partition_type", "ASC"],
+          ["schema_version", "DESC"],
+        ], // 按分区类型和版本排序
       });
 
-      if (!latestSchema) {
+      if (allSchemas.length === 0) {
+        const partitionMsg = partition_type
+          ? `, partition_type: ${partition_type}`
+          : "";
         res.status(404).json({
           success: false,
-          message: `未找到表 ${table_name} (${database_type}) 的结构定义`,
+          message: `未找到表结构定义: ${table_name} (database_type: ${database_type}${partitionMsg})`,
+        });
+        return;
+      }
+
+      // 如果没有指定分区类型，但存在多个分区类型，需要用户明确指定
+      if (!partition_type) {
+        const uniquePartitionTypes = [
+          ...new Set(allSchemas.map((s) => s.partition_type)),
+        ];
+        if (uniquePartitionTypes.length > 1) {
+          res.status(400).json({
+            success: false,
+            message: `表 ${table_name} (${database_type}) 存在多种分区类型: [${uniquePartitionTypes.join(
+              ", "
+            )}]，请在请求中指定 partition_type 参数`,
+            available_partition_types: uniquePartitionTypes,
+          });
+          return;
+        }
+      }
+
+      // 获取最新版本的表结构定义
+      const latestSchema = allSchemas[0];
+      if (!latestSchema) {
+        res.status(500).json({
+          success: false,
+          message: `数据异常：未能获取表结构定义`,
         });
         return;
       }
@@ -402,7 +455,8 @@ export class MigrationController {
       await this.migrationService.migrateTable(
         table_name,
         database_type,
-        latestSchema.schema_version
+        latestSchema.schema_version,
+        latestSchema.partition_type
       );
 
       res.json({
@@ -473,7 +527,8 @@ export class MigrationController {
       await this.migrationService.migrateTable(
         schema.table_name,
         schema.database_type,
-        schema.schema_version
+        schema.schema_version,
+        schema.partition_type
       );
 
       res.json({

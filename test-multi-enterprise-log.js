@@ -17,7 +17,7 @@ async function testMultiEnterpriseLogTable() {
       table_name: "user_operation_logs1",
       database_type: "log",
       partition_type: "time",
-      schema_version: "1.2.19",
+      schema_version: "1.2.23",
       schema_definition: JSON.stringify({
         tableName: "user_operation_logs1",
         columns: [
@@ -128,6 +128,7 @@ async function testMultiEnterpriseLogTable() {
     const migrateResponse = await axios.post(`${BASE_URL}/execute`, {
       table_name: "user_operation_logs1",
       database_type: "log",
+      partition_type: "time",
     });
 
     // // 4. 向所有企业的log库执行迁移

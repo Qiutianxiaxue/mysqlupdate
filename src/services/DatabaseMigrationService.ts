@@ -35,28 +35,47 @@ export class DatabaseMigrationService {
 
   /**
    * 统一的表迁移方法
-   * 通过表名、数据库类型和版本号来确定操作类型
+   * 通过表名、数据库类型、分区类型和版本号来确定操作类型
    */
   async migrateTable(
     tableName: string,
     databaseType: string,
-    schemaVersion?: string
+    schemaVersion?: string,
+    partitionType?: string
   ): Promise<void> {
     try {
       logger.info(
-        `开始迁移表: ${tableName}, 数据库类型: ${databaseType}, 版本: ${
-          schemaVersion || "最新"
-        }`
+        `🚀 开始迁移表: ${tableName}, 数据库类型: ${databaseType}, 分区类型: ${
+          partitionType || "自动检测"
+        }, 版本: ${schemaVersion || "最新"}`
       );
 
       // 获取表结构定义
-      const schema = await this.getTableSchema(
-        tableName,
-        databaseType,
-        schemaVersion
-      );
+      let schema: TableSchema | null;
+      if (partitionType) {
+        // 如果指定了分区类型，精确查找
+        schema = await this.getTableSchema(
+          tableName,
+          databaseType,
+          partitionType,
+          schemaVersion
+        );
+      } else {
+        // 如果没有指定分区类型，自动检测
+        schema = await this.getTableSchemaWithAutoPartition(
+          tableName,
+          databaseType,
+          schemaVersion
+        );
+      }
+
       if (!schema) {
-        throw new Error(`未找到表结构定义: ${tableName} (${databaseType})`);
+        const partitionMsg = partitionType
+          ? `, partition_type: ${partitionType}`
+          : "";
+        throw new Error(
+          `未找到表结构定义: ${tableName} (database_type: ${databaseType}${partitionMsg})`
+        );
       }
 
       // 获取所有企业
@@ -88,16 +107,18 @@ export class DatabaseMigrationService {
   }
 
   /**
-   * 获取表结构定义
+   * 获取表结构定义（包含分区类型）
    */
   private async getTableSchema(
     tableName: string,
     databaseType: string,
+    partitionType: string,
     schemaVersion?: string
   ): Promise<TableSchema | null> {
     const whereCondition: any = {
       table_name: tableName,
       database_type: databaseType,
+      partition_type: partitionType,
       is_active: true,
     };
 
@@ -111,6 +132,72 @@ export class DatabaseMigrationService {
     });
 
     return schema;
+  }
+
+  /**
+   * 获取表结构定义（自动检测分区类型，向后兼容）
+   */
+  private async getTableSchemaWithAutoPartition(
+    tableName: string,
+    databaseType: string,
+    schemaVersion?: string
+  ): Promise<TableSchema | null> {
+    // 首先尝试查找所有匹配的表定义
+    const whereCondition: any = {
+      table_name: tableName,
+      database_type: databaseType,
+      is_active: true,
+    };
+
+    if (schemaVersion) {
+      whereCondition.schema_version = schemaVersion;
+    }
+
+    const schemas = await TableSchema.findAll({
+      where: whereCondition,
+      order: [
+        ["partition_type", "ASC"],
+        ["schema_version", "DESC"],
+      ],
+    });
+
+    if (schemas.length === 0) {
+      return null;
+    }
+
+    // 如果只有一个分区类型，直接返回
+    const uniquePartitionTypes = [
+      ...new Set(schemas.map((s) => s.partition_type)),
+    ];
+    if (uniquePartitionTypes.length === 1) {
+      return schemas[0] || null;
+    }
+
+    // 如果有多个分区类型，优先返回 'none' 类型（向后兼容）
+    const nonePartitionSchema = schemas.find(
+      (s) => s.partition_type === "none"
+    );
+    if (nonePartitionSchema) {
+      logger.warn(
+        `表 ${tableName} (${databaseType}) 存在多种分区类型 [${uniquePartitionTypes.join(
+          ", "
+        )}]，自动选择 'none' 类型`
+      );
+      return nonePartitionSchema;
+    }
+
+    // 如果没有 'none' 类型，返回第一个（按字母排序）
+    const firstSchema = schemas[0];
+    if (firstSchema) {
+      logger.warn(
+        `表 ${tableName} (${databaseType}) 存在多种分区类型 [${uniquePartitionTypes.join(
+          ", "
+        )}]，自动选择第一个: ${firstSchema.partition_type}`
+      );
+      return firstSchema;
+    }
+
+    return null;
   }
 
   /**
@@ -176,7 +263,10 @@ export class DatabaseMigrationService {
   ): Promise<void> {
     try {
       const tableName = this.getTableName(tableDefinition.tableName, storeId);
-      logger.info(`开始迁移表: ${tableName}`);
+      logger.info(`🚀 开始迁移表:`);
+      logger.info(`   - 原始表名: ${tableDefinition.tableName}`);
+      logger.info(`   - 后缀ID: ${storeId || "none"}`);
+      logger.info(`   - 最终表名: ${tableName}`);
 
       // 检查表是否存在
       const tableExists = await this.tableExistsWithConnection(
@@ -185,14 +275,14 @@ export class DatabaseMigrationService {
       );
 
       if (tableExists) {
-        logger.info(`表 ${tableName} 已存在，执行升级操作`);
+        logger.info(`✅ 表 ${tableName} 已存在，执行升级操作`);
         await this.upgradeTableWithConnection(
           connection,
           tableName,
           tableDefinition
         );
       } else {
-        logger.info(`表 ${tableName} 不存在，执行创建操作`);
+        logger.info(`➕ 表 ${tableName} 不存在，执行创建操作`);
         await this.createTableWithConnection(
           connection,
           tableName,
@@ -200,9 +290,15 @@ export class DatabaseMigrationService {
         );
       }
 
-      logger.info(`表 ${tableName} 迁移完成`);
+      logger.info(`🎉 表 ${tableName} 迁移完成`);
     } catch (error) {
-      logger.error(`迁移表 ${tableDefinition.tableName} 失败:`, error);
+      logger.error(
+        `❌ 迁移表 ${tableDefinition.tableName} (最终表名: ${this.getTableName(
+          tableDefinition.tableName,
+          storeId
+        )}) 失败:`,
+        error
+      );
       throw error;
     }
   }
