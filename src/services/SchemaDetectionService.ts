@@ -7,7 +7,10 @@ import logger from "@/utils/logger";
 interface ColumnInfo {
   column_name: string;
   data_type: string;
+  column_type: string; // 完整的字段类型定义，包含ENUM值
   character_maximum_length: number | null;
+  numeric_precision: number | null;
+  numeric_scale: number | null;
   is_nullable: string;
   column_default: any;
   column_key: string;
@@ -560,7 +563,10 @@ export class SchemaDetectionService {
         SELECT 
           COLUMN_NAME as column_name,
           DATA_TYPE as data_type,
+          COLUMN_TYPE as column_type,
           CHARACTER_MAXIMUM_LENGTH as character_maximum_length,
+          NUMERIC_PRECISION as numeric_precision,
+          NUMERIC_SCALE as numeric_scale,
           IS_NULLABLE as is_nullable,
           COLUMN_DEFAULT as column_default,
           COLUMN_KEY as column_key,
@@ -629,18 +635,254 @@ export class SchemaDetectionService {
   }
 
   /**
+   * 智能识别正确的主键
+   * 根据命名规范（表名+_id）和字段属性来确定真正的主键
+   */
+  private identifyCorrectPrimaryKey(
+    tableName: string,
+    columns: ColumnInfo[]
+  ): string | null {
+    // 1. 移除表前缀，获取基础表名
+    const baseTableName = tableName.replace(/^qc_/, "");
+    const expectedPrimaryKeyName = `${baseTableName}_id`;
+
+    logger.info(
+      `🔍 为表 ${tableName} 识别正确主键，期望主键名: ${expectedPrimaryKeyName}`
+    );
+
+    // 2. 查找符合命名规范的主键字段
+    const expectedPrimaryKeyColumn = columns.find(
+      (col) => col.column_name === expectedPrimaryKeyName
+    );
+
+    if (expectedPrimaryKeyColumn) {
+      logger.info(`✅ 找到符合命名规范的主键字段: ${expectedPrimaryKeyName}`);
+
+      // 3. 验证该字段是否适合作为主键（通常应该是INT类型且自增）
+      const isAutoIncrement =
+        expectedPrimaryKeyColumn.extra?.includes("auto_increment") || false;
+      const isIntType = ["int", "bigint", "smallint", "tinyint"].includes(
+        expectedPrimaryKeyColumn.data_type?.toLowerCase() || ""
+      );
+
+      if (isIntType && isAutoIncrement) {
+        logger.info(
+          `✅ 字段 ${expectedPrimaryKeyName} 满足主键条件（${expectedPrimaryKeyColumn.data_type}，自增）`
+        );
+        return expectedPrimaryKeyName;
+      } else {
+        logger.warn(
+          `⚠️  字段 ${expectedPrimaryKeyName} 存在但不满足主键条件（类型: ${expectedPrimaryKeyColumn.data_type}，自增: ${isAutoIncrement}）`
+        );
+      }
+    }
+
+    // 4. 如果没找到符合命名规范的，查找其他可能的主键字段
+    logger.info(`🔄 没找到标准主键，查找其他可能的主键字段...`);
+
+    // 查找自增的整型字段
+    const autoIncrementColumns = columns.filter(
+      (col) =>
+        col.extra.includes("auto_increment") &&
+        ["int", "bigint", "smallint", "tinyint"].includes(
+          col.data_type.toLowerCase()
+        )
+    );
+
+    if (autoIncrementColumns.length === 1 && autoIncrementColumns[0]) {
+      logger.info(
+        `✅ 找到唯一的自增字段作为主键: ${autoIncrementColumns[0].column_name}`
+      );
+      return autoIncrementColumns[0].column_name;
+    }
+
+    // 5. 查找名称包含 'id' 的字段
+    const idColumns = columns.filter(
+      (col) =>
+        col.column_name.toLowerCase().includes("id") &&
+        ["int", "bigint", "smallint", "tinyint"].includes(
+          col.data_type.toLowerCase()
+        ) &&
+        col.column_key === "PRI"
+    );
+
+    if (idColumns.length === 1 && idColumns[0]) {
+      logger.info(`✅ 找到包含ID的主键字段: ${idColumns[0].column_name}`);
+      return idColumns[0].column_name;
+    }
+
+    // 6. 如果还是找不到，记录警告
+    logger.warn(`⚠️  表 ${tableName} 无法识别正确的主键，建议检查表结构设计`);
+    logger.warn(
+      `💡 建议将主键命名为: ${expectedPrimaryKeyName}，类型为INT AUTO_INCREMENT`
+    );
+
+    return null;
+  }
+
+  /**
+   * 判断数据类型是否应该设置长度属性
+   */
+  private shouldSetLength(dataType: string): boolean {
+    const typeWithoutLength = [
+      "TINYBLOB",
+      "BLOB",
+      "MEDIUMBLOB",
+      "LONGBLOB",
+      "TINYTEXT",
+      "TEXT",
+      "MEDIUMTEXT",
+      "LONGTEXT",
+      "JSON",
+      "GEOMETRY",
+      "POINT",
+      "LINESTRING",
+      "POLYGON",
+      "MULTIPOINT",
+      "MULTILINESTRING",
+      "MULTIPOLYGON",
+      "GEOMETRYCOLLECTION",
+      "DATE",
+      "TIME",
+      "DATETIME",
+      "TIMESTAMP",
+      "YEAR",
+      "ENUM",
+      "SET", // ENUM和SET不使用length，使用values
+    ];
+
+    return !typeWithoutLength.includes(dataType.toUpperCase());
+  }
+
+  /**
+   * 从COLUMN_TYPE字段解析ENUM/SET的枚举值
+   * 输入: "enum('value1','value2','value3')" 或 "set('tag1','tag2','tag3')"
+   * 输出: ["value1", "value2", "value3"]
+   */
+  private parseEnumValuesFromColumnType(columnType: string): string[] {
+    if (!columnType) return [];
+
+    // 匹配ENUM或SET的括号内容
+    const match = columnType.match(/^(enum|set)\((.*)\)$/i);
+    if (!match) return [];
+
+    const valuesStr = match[2];
+    if (!valuesStr) return [];
+
+    const values: string[] = [];
+    let current = "";
+    let inQuote = false;
+    let escaped = false;
+
+    for (let i = 0; i < valuesStr.length; i++) {
+      const char = valuesStr[i];
+
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escaped = true;
+        current += char;
+        continue;
+      }
+
+      if (char === "'") {
+        if (inQuote) {
+          // 检查是否是转义的引号（双引号）
+          if (i + 1 < valuesStr.length && valuesStr[i + 1] === "'") {
+            current += "'";
+            i++; // 跳过下一个引号
+          } else {
+            // 引号结束
+            inQuote = false;
+          }
+        } else {
+          // 引号开始
+          inQuote = true;
+        }
+        continue;
+      }
+
+      if (!inQuote && char === ",") {
+        // 分隔符，保存当前值
+        if (current.trim()) {
+          values.push(current.trim());
+        }
+        current = "";
+        continue;
+      }
+
+      current += char;
+    }
+
+    // 保存最后一个值
+    if (current.trim()) {
+      values.push(current.trim());
+    }
+
+    return values;
+  }
+
+  /**
    * 生成schema定义
    */
   private generateSchemaDefinition(tableInfo: any) {
+    // 先分析主键情况
+    const primaryKeyColumns = tableInfo.columns.filter(
+      (col: ColumnInfo) => col.column_key === "PRI"
+    );
+    const hasSinglePrimaryKey = primaryKeyColumns.length === 1;
+    const hasCompositePrimaryKey = primaryKeyColumns.length > 1;
+
+    logger.info(
+      `表 ${tableInfo.tableName} 主键分析: 主键列数=${primaryKeyColumns.length}, 单一主键=${hasSinglePrimaryKey}, 复合主键=${hasCompositePrimaryKey}`
+    );
+    if (primaryKeyColumns.length > 0) {
+      const primaryKeyNames = primaryKeyColumns.map(
+        (col: ColumnInfo) => col.column_name
+      );
+      logger.info(`原始主键列: [${primaryKeyNames.join(", ")}]`);
+    }
+
+    // 智能主键识别：根据命名规范确定真正的主键
+    const correctPrimaryKey = this.identifyCorrectPrimaryKey(
+      tableInfo.tableName,
+      tableInfo.columns
+    );
+
     const columns = tableInfo.columns.map((col: ColumnInfo) => {
       const column: any = {
         name: col.column_name,
         type: col.data_type.toUpperCase(),
       };
 
-      // 只在有值时设置长度
-      if (col.character_maximum_length !== null) {
-        column.length = col.character_maximum_length;
+      // 特殊处理ENUM和SET类型
+      const dataType = col.data_type.toUpperCase();
+      if (dataType === "ENUM" || dataType === "SET") {
+        // 解析ENUM/SET的枚举值
+        const enumValues = this.parseEnumValuesFromColumnType(col.column_type);
+        if (enumValues.length > 0) {
+          column.values = enumValues;
+        }
+      } else if (dataType === "DECIMAL" || dataType === "NUMERIC") {
+        // 处理DECIMAL类型的精度和标度
+        if (col.numeric_precision !== null) {
+          column.precision = col.numeric_precision;
+          if (col.numeric_scale !== null) {
+            column.scale = col.numeric_scale;
+          }
+        }
+      } else {
+        // 只在有值时设置长度，排除不需要长度的类型
+        if (
+          col.character_maximum_length !== null &&
+          this.shouldSetLength(col.data_type)
+        ) {
+          column.length = col.character_maximum_length;
+        }
       }
 
       // 只在不允许为空时设置allowNull为false，默认允许为空
@@ -653,9 +895,21 @@ export class SchemaDetectionService {
         column.defaultValue = col.column_default;
       }
 
-      // 处理主键：所有主键列都设置primaryKey为true
-      if (col.column_key === "PRI") {
+      // 使用智能识别的主键，而不是数据库中错误的复合主键设计
+      if (col.column_name === correctPrimaryKey) {
         column.primaryKey = true;
+        logger.info(
+          `✅ 设置正确的主键: ${
+            col.column_name
+          }（符合 ${tableInfo.tableName.replace("qc_", "")}_id 规范）`
+        );
+      } else if (
+        col.column_key === "PRI" &&
+        col.column_name !== correctPrimaryKey
+      ) {
+        logger.warn(
+          `⚠️  忽略错误的主键设置: ${col.column_name}（应该是外键或普通字段）`
+        );
       }
 
       if (col.extra.includes("auto_increment")) {
@@ -676,6 +930,12 @@ export class SchemaDetectionService {
 
     // 处理索引
     const indexMap = new Map<string, any>();
+
+    // 收集已经在列定义中设置了unique的字段
+    const uniqueColumns = new Set(
+      columns.filter((col: any) => col.unique).map((col: any) => col.name)
+    );
+
     tableInfo.indexes.forEach((idx: IndexInfo) => {
       if (idx.index_name === "PRIMARY") return; // 跳过主键索引，因为主键信息已经在列定义中
 
@@ -690,7 +950,17 @@ export class SchemaDetectionService {
       indexMap.get(idx.index_name).fields.push(idx.column_name);
     });
 
-    const indexes = Array.from(indexMap.values());
+    // 过滤掉已经在列定义中设置unique的单字段唯一索引
+    const indexes = Array.from(indexMap.values()).filter((index) => {
+      // 如果是唯一索引且只有一个字段，检查该字段是否已在列定义中设置unique
+      if (index.unique && index.fields.length === 1) {
+        const fieldName = index.fields[0];
+        if (uniqueColumns.has(fieldName)) {
+          return false; // 过滤掉重复的唯一索引
+        }
+      }
+      return true;
+    });
 
     return {
       tableName: tableInfo.tableName,
@@ -864,6 +1134,46 @@ export class SchemaDetectionService {
           newComment || "无"
         }"`
       );
+    }
+
+    // 比较ENUM/SET的values属性
+    if (existingCol.values || newCol.values) {
+      const existingValues = existingCol.values || [];
+      const newValues = newCol.values || [];
+
+      if (JSON.stringify(existingValues) !== JSON.stringify(newValues)) {
+        changes.push(
+          `列 ${colName} 枚举值变化: [${existingValues.join(
+            ","
+          )}] -> [${newValues.join(",")}]`
+        );
+      }
+    }
+
+    // 比较DECIMAL的precision属性
+    if (existingCol.precision || newCol.precision) {
+      const existingPrecision = existingCol.precision || null;
+      const newPrecision = newCol.precision || null;
+      if (existingPrecision !== newPrecision) {
+        changes.push(
+          `列 ${colName} 精度变化: ${existingPrecision || "无"} -> ${
+            newPrecision || "无"
+          }`
+        );
+      }
+    }
+
+    // 比较DECIMAL的scale属性
+    if (existingCol.scale || newCol.scale) {
+      const existingScale = existingCol.scale || null;
+      const newScale = newCol.scale || null;
+      if (existingScale !== newScale) {
+        changes.push(
+          `列 ${colName} 小数位变化: ${existingScale || "无"} -> ${
+            newScale || "无"
+          }`
+        );
+      }
     }
 
     return changes;

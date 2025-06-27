@@ -16,6 +16,11 @@ interface ColumnDefinition {
   autoIncrement?: boolean;
   unique?: boolean;
   comment?: string;
+  // ENUM和SET类型专用字段
+  values?: string[]; // ENUM/SET的枚举值，如 ['value1', 'value2', 'value3']
+  // 可扩展字段（保持向后兼容）
+  precision?: number; // DECIMAL/NUMERIC的精度
+  scale?: number; // DECIMAL/NUMERIC的小数位数
 }
 
 interface TableDefinition {
@@ -644,11 +649,20 @@ export class DatabaseMigrationService {
     schemaVersion?: string
   ): Promise<void> {
     try {
+      // 先检查主键列的情况
+      const primaryKeyColumns = tableDefinition.columns.filter(
+        (col) => col.primaryKey
+      );
+      const hasSinglePrimaryKey = primaryKeyColumns.length === 1;
+      const hasCompositePrimaryKey = primaryKeyColumns.length > 1;
+
       const columnDefinitions = tableDefinition.columns
         .map((col) => {
           let definition = `\`${col.name}\` ${this.getDataType(col)}`;
 
-          if (col.primaryKey) definition += " PRIMARY KEY";
+          // 只有单个主键时才在列定义中添加PRIMARY KEY
+          if (col.primaryKey && hasSinglePrimaryKey)
+            definition += " PRIMARY KEY";
           if (col.autoIncrement) definition += " AUTO_INCREMENT";
           if (!col.allowNull) definition += " NOT NULL";
           if (col.unique) definition += " UNIQUE";
@@ -662,6 +676,14 @@ export class DatabaseMigrationService {
         .join(", ");
 
       let createTableSQL = `CREATE TABLE \`${tableName}\` (${columnDefinitions}`;
+
+      // 如果有复合主键，添加复合主键约束
+      if (hasCompositePrimaryKey) {
+        const primaryKeyFields = primaryKeyColumns
+          .map((col) => `\`${col.name}\``)
+          .join(", ");
+        createTableSQL += `, PRIMARY KEY (${primaryKeyFields})`;
+      }
 
       // 添加索引
       if (tableDefinition.indexes && tableDefinition.indexes.length > 0) {
@@ -804,7 +826,8 @@ export class DatabaseMigrationService {
         await this.synchronizeIndexes(
           connection,
           tableName,
-          tableDefinition.indexes || []
+          tableDefinition.indexes || [],
+          tableDefinition
         );
 
         logger.info(`✅ 表 ${tableName} 升级完成`);
@@ -899,7 +922,8 @@ export class DatabaseMigrationService {
           await this.synchronizeIndexes(
             connection,
             tableName,
-            tableDefinition.indexes || []
+            tableDefinition.indexes || [],
+            tableDefinition
           );
         } catch (describeError) {
           logger.error(`DESCRIBE命令也失败了:`, describeError);
@@ -1075,12 +1099,24 @@ export class DatabaseMigrationService {
         }
       }
 
-      // 检查数据类型（简化的类型检查）
+      // 检查数据类型（包含ENUM/SET的特殊处理）
       const expectedDataType = this.getDataType(definedColumn).toUpperCase();
       const normalizedCurrentType = this.normalizeDataType(currentType);
       const normalizedExpectedType = this.normalizeDataType(expectedDataType);
 
-      if (normalizedCurrentType !== normalizedExpectedType) {
+      // 特殊处理ENUM和SET类型
+      const definedType = definedColumn.type.toUpperCase();
+      if (definedType === "ENUM" || definedType === "SET") {
+        // 使用专门的ENUM比较方法
+        const currentFullType =
+          existingColumn.COLUMN_TYPE || existingColumn.Type || "";
+        if (this.isEnumTypeNeedsUpdate(currentFullType, definedColumn)) {
+          needsUpdate = true;
+          updateReasons.push(
+            `${definedType} values: ${currentFullType} → ${expectedDataType}`
+          );
+        }
+      } else if (normalizedCurrentType !== normalizedExpectedType) {
         needsUpdate = true;
         updateReasons.push(
           `type: ${normalizedCurrentType} → ${normalizedExpectedType}`
@@ -1258,6 +1294,124 @@ export class DatabaseMigrationService {
   }
 
   /**
+   * 比较ENUM/SET类型是否需要更新
+   */
+  private isEnumTypeNeedsUpdate(
+    currentColumnType: string,
+    definedColumn: ColumnDefinition
+  ): boolean {
+    const definedType = definedColumn.type.toUpperCase();
+
+    // 只处理ENUM和SET类型
+    if (definedType !== "ENUM" && definedType !== "SET") {
+      return false;
+    }
+
+    // 检查定义的配置
+    if (!definedColumn.values || definedColumn.values.length === 0) {
+      // 如果没有定义values，检查是否使用了过时的length配置
+      if (definedColumn.length) {
+        logger.warn(`⚠️  ${definedType}类型建议使用values数组替代length参数`);
+        // 对于使用length的情况，暂时认为不需要更新（保持兼容性）
+        return false;
+      } else {
+        logger.error(`❌ ${definedType}类型必须定义values数组`);
+        return true; // 强制更新
+      }
+    }
+
+    // 解析当前数据库中的ENUM/SET值
+    const currentEnumMatch = currentColumnType.match(/^(enum|set)\((.*)\)$/i);
+    if (!currentEnumMatch) {
+      // 如果当前不是ENUM/SET格式，需要更新
+      return true;
+    }
+
+    const currentValuesStr = currentEnumMatch[2] || "";
+    const currentValues = this.parseEnumValues(currentValuesStr);
+    const definedValues = definedColumn.values;
+
+    // 比较值数组
+    if (currentValues.length !== definedValues.length) {
+      return true;
+    }
+
+    // 逐个比较值（顺序敏感）
+    for (let i = 0; i < currentValues.length; i++) {
+      if (currentValues[i] !== definedValues[i]) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * 解析ENUM/SET值字符串
+   * 输入: "'value1','value2','value3'"
+   * 输出: ["value1", "value2", "value3"]
+   */
+  private parseEnumValues(valuesStr: string): string[] {
+    if (!valuesStr) return [];
+
+    const values: string[] = [];
+    let current = "";
+    let inQuote = false;
+    let escaped = false;
+
+    for (let i = 0; i < valuesStr.length; i++) {
+      const char = valuesStr[i];
+
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escaped = true;
+        current += char;
+        continue;
+      }
+
+      if (char === "'") {
+        if (inQuote) {
+          // 检查是否是转义的引号（双引号）
+          if (i + 1 < valuesStr.length && valuesStr[i + 1] === "'") {
+            current += "'";
+            i++; // 跳过下一个引号
+          } else {
+            // 引号结束
+            inQuote = false;
+          }
+        } else {
+          // 引号开始
+          inQuote = true;
+        }
+        continue;
+      }
+
+      if (!inQuote && char === ",") {
+        // 分隔符，保存当前值
+        if (current.trim()) {
+          values.push(current.trim());
+        }
+        current = "";
+        continue;
+      }
+
+      current += char;
+    }
+
+    // 保存最后一个值
+    if (current.trim()) {
+      values.push(current.trim());
+    }
+
+    return values;
+  }
+
+  /**
    * 标准化默认值，用于比较
    */
   private normalizeDefaultValue(value: any): string {
@@ -1327,7 +1481,8 @@ export class DatabaseMigrationService {
   private async synchronizeIndexes(
     connection: Sequelize,
     tableName: string,
-    definedIndexes: Array<{ name: string; fields: string[]; unique?: boolean }>
+    definedIndexes: Array<{ name: string; fields: string[]; unique?: boolean }>,
+    tableDefinition?: TableDefinition
   ): Promise<void> {
     try {
       logger.info(`🔄 开始同步表 ${tableName} 的索引...`);
@@ -1353,10 +1508,44 @@ export class DatabaseMigrationService {
         ),
       ];
 
+      // 收集所有应该存在的索引名称（包括在列上设置unique的字段）
       const definedIndexNames = definedIndexes.map((idx) => idx.name);
+
+      // 如果提供了tableDefinition，检查列上的unique属性
+      const uniqueColumnNames: string[] = [];
+      if (tableDefinition) {
+        const uniqueColumns = tableDefinition.columns.filter(
+          (col) => col.unique
+        );
+        uniqueColumnNames.push(...uniqueColumns.map((col) => col.name));
+
+        // 对于unique列，我们需要在现有索引中找到对应的唯一索引
+        for (const col of uniqueColumns) {
+          // 查找匹配此列的唯一索引
+          const matchingUniqueIndexes = existingIndexNames.filter(
+            (indexName) => {
+              const indexRows = indexData.filter(
+                (idx) => idx.Key_name === indexName
+              );
+              // 检查是否是单列唯一索引且列名匹配
+              return (
+                indexRows.length === 1 &&
+                indexRows[0].Non_unique === 0 &&
+                indexRows[0].Column_name === col.name
+              );
+            }
+          );
+
+          // 将找到的匹配索引名加入到定义列表中，避免被删除
+          definedIndexNames.push(...matchingUniqueIndexes);
+        }
+      }
 
       logger.info(`现有索引: [${existingIndexNames.join(", ")}]`);
       logger.info(`定义索引: [${definedIndexNames.join(", ")}]`);
+      if (uniqueColumnNames.length > 0) {
+        logger.info(`UNIQUE列: [${uniqueColumnNames.join(", ")}]`);
+      }
 
       // 1. 删除不再需要的索引
       for (const existingIndexName of existingIndexNames) {
@@ -1694,11 +1883,94 @@ export class DatabaseMigrationService {
   private getDataType(column: ColumnDefinition): string {
     let type = column.type.toUpperCase();
 
-    if (column.length) {
+    // 特殊处理不同的数据类型
+    if (type === "ENUM" || type === "SET") {
+      // ENUM和SET类型需要定义具体的枚举值
+      if (column.values && column.values.length > 0) {
+        // 正确格式: ENUM('value1', 'value2', 'value3')
+        const enumValues = column.values
+          .map((value) => `'${value.replace(/'/g, "''")}'`) // 转义单引号
+          .join(", ");
+        return `${type}(${enumValues})`;
+      } else {
+        // 如果没有提供values，检查是否使用了length（向后兼容）
+        if (column.length) {
+          logger.warn(
+            `⚠️  ${type}类型使用length参数已过时，建议使用values数组定义枚举值`
+          );
+          logger.warn(`💡 建议配置: "values": ["value1", "value2", "value3"]`);
+          // 生成一个基于length的默认枚举（向后兼容）
+          return `${type}('default')`;
+        } else {
+          logger.error(`❌ ${type}类型必须定义values数组或length参数`);
+          throw new Error(
+            `${type}类型必须定义values数组，例如: values: ["value1", "value2"]`
+          );
+        }
+      }
+    } else if (type === "DECIMAL" || type === "NUMERIC") {
+      // DECIMAL/NUMERIC类型支持precision和scale
+      if (column.precision) {
+        if (column.scale !== undefined) {
+          return `${type}(${column.precision}, ${column.scale})`;
+        } else {
+          return `${type}(${column.precision})`;
+        }
+      } else if (column.length) {
+        return `${type}(${column.length})`;
+      }
+      return type;
+    } else if (column.length && this.shouldHaveLength(type)) {
       type += `(${column.length})`;
     }
 
     return type;
+  }
+
+  /**
+   * 判断数据类型是否应该有长度参数
+   */
+  private shouldHaveLength(dataType: string): boolean {
+    const typesWithLength = [
+      "VARCHAR",
+      "CHAR",
+      "VARBINARY",
+      "BINARY",
+      "DECIMAL",
+      "NUMERIC",
+      "FLOAT",
+      "DOUBLE",
+      "BIT",
+      "TINYINT",
+      "SMALLINT",
+      "MEDIUMINT",
+      "INT",
+      "BIGINT",
+    ];
+
+    const typesWithoutLength = [
+      "TINYBLOB",
+      "BLOB",
+      "MEDIUMBLOB",
+      "LONGBLOB",
+      "TINYTEXT",
+      "TEXT",
+      "MEDIUMTEXT",
+      "LONGTEXT",
+      "JSON",
+      "DATE",
+      "TIME",
+      "DATETIME",
+      "TIMESTAMP",
+      "YEAR",
+      "ENUM",
+      "SET", // ENUM和SET需要特殊处理
+    ];
+
+    return (
+      typesWithLength.includes(dataType) &&
+      !typesWithoutLength.includes(dataType)
+    );
   }
 
   /**
@@ -1709,8 +1981,10 @@ export class DatabaseMigrationService {
       return "";
     }
 
-    // 特殊处理TIMESTAMP类型的默认值
-    if (column.type.toUpperCase() === "TIMESTAMP") {
+    const columnType = column.type.toUpperCase();
+
+    // 特殊处理TIMESTAMP和DATETIME类型的默认值
+    if (columnType === "TIMESTAMP" || columnType === "DATETIME") {
       if (column.defaultValue === "CURRENT_TIMESTAMP") {
         return " DEFAULT CURRENT_TIMESTAMP";
       } else if (
