@@ -6,7 +6,7 @@
 [![Docker](https://img.shields.io/badge/Docker-20.0+-blue.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-基于 Node.js 和 TypeScript 的企业级多租户数据库自动升级系统，支持表结构版本化管理、智能检测变更、自动迁移、分区表支持等功能。
+基于 Node.js 和 TypeScript 的企业级多租户数据库自动升级系统，支持表结构版本化管理、智能检测变更、自动迁移、分区表支持等功能。支持基于基准库的自动检测，自动生成升级版本，自动迁移的数据库升级拒绝方案。
 
 ## 📋 目录
 

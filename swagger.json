@@ -1,0 +1,1469 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MySQL 多租户数据库自动升级系统 API",
+    "description": "基于 Node.js 和 TypeScript 的企业级多租户数据库自动升级系统，支持表结构版本化管理、智能检测变更、自动迁移、分区表支持等功能。",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support",
+      "email": "support@example.com"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "开发环境"
+    },
+    {
+      "url": "https://api.example.com",
+      "description": "生产环境"
+    }
+  ],
+  "tags": [
+    {
+      "name": "系统管理",
+      "description": "系统健康检查和基础信息"
+    },
+    {
+      "name": "表结构检测",
+      "description": "表结构变更检测相关接口"
+    },
+    {
+      "name": "迁移执行",
+      "description": "数据库迁移执行相关接口"
+    },
+    {
+      "name": "表结构定义管理",
+      "description": "表结构定义的增删改查操作"
+    },
+    {
+      "name": "企业管理",
+      "description": "多租户企业管理接口"
+    },
+    {
+      "name": "连接管理",
+      "description": "数据库连接池管理"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["系统管理"],
+        "summary": "获取系统信息",
+        "description": "获取系统基本信息和可用端点",
+        "responses": {
+          "200": {
+            "description": "系统信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "MySQL数据库自动升级服务"
+                    },
+                    "version": {
+                      "type": "string",
+                      "example": "1.0.0"
+                    },
+                    "endpoints": {
+                      "type": "object",
+                      "properties": {
+                        "health": { "type": "string", "example": "/health" },
+                        "migration": {
+                          "type": "string",
+                          "example": "/api/migration"
+                        },
+                        "schemaDetection": {
+                          "type": "string",
+                          "example": "/api/schema-detection"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["系统管理"],
+        "summary": "健康检查",
+        "description": "检查系统运行状态",
+        "responses": {
+          "200": {
+            "description": "系统正常",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schema-detection/table": {
+      "post": {
+        "tags": ["表结构检测"],
+        "summary": "检测单个表结构变化",
+        "description": "检测指定表的结构变化",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["tableName"],
+                "properties": {
+                  "tableName": {
+                    "type": "string",
+                    "description": "表名",
+                    "example": "users"
+                  },
+                  "databaseType": {
+                    "type": "string",
+                    "enum": ["main", "log", "order", "static"],
+                    "default": "main",
+                    "description": "数据库类型"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "检测成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/schema-detection/all": {
+      "post": {
+        "tags": ["表结构检测"],
+        "summary": "检测所有表结构变化",
+        "description": "检测基准数据库中所有表的结构变化",
+        "responses": {
+          "200": {
+            "description": "检测成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllDetectionResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/schema-detection/detect-and-save": {
+      "post": {
+        "tags": ["表结构检测"],
+        "summary": "检测并保存表结构变化",
+        "description": "检测所有表结构变化并自动保存到系统中",
+        "responses": {
+          "200": {
+            "description": "检测并保存成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionSaveResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/schema-detection/tables": {
+      "post": {
+        "tags": ["表结构检测"],
+        "summary": "获取基准数据库表信息",
+        "description": "获取基准数据库中所有表的详细信息",
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseTablesResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/schema-detection/table/info": {
+      "post": {
+        "tags": ["表结构检测"],
+        "summary": "获取表详细信息",
+        "description": "获取指定表的详细结构信息",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["tableName"],
+                "properties": {
+                  "tableName": {
+                    "type": "string",
+                    "description": "表名",
+                    "example": "users"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableInfoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/execute": {
+      "post": {
+        "tags": ["迁移执行"],
+        "summary": "执行表迁移",
+        "description": "执行指定表的迁移操作",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteMigrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "迁移成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/execute-all": {
+      "post": {
+        "tags": ["迁移执行"],
+        "summary": "一键迁移所有表",
+        "description": "执行所有活跃表结构定义的迁移",
+        "responses": {
+          "200": {
+            "description": "迁移完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrateAllResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/schemas/create": {
+      "post": {
+        "tags": ["表结构定义管理"],
+        "summary": "创建表结构定义",
+        "description": "创建新的表结构定义",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSchemaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/schemas/list": {
+      "post": {
+        "tags": ["表结构定义管理"],
+        "summary": "获取表结构定义列表",
+        "description": "获取所有活跃的表结构定义",
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaListResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/schemas/history": {
+      "post": {
+        "tags": ["表结构定义管理"],
+        "summary": "获取表结构历史版本",
+        "description": "获取指定表的所有历史版本",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["table_name", "database_type"],
+                "properties": {
+                  "table_name": {
+                    "type": "string",
+                    "description": "表名",
+                    "example": "users"
+                  },
+                  "database_type": {
+                    "type": "string",
+                    "enum": ["main", "log", "order", "static"],
+                    "description": "数据库类型"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/schemas/detail": {
+      "post": {
+        "tags": ["表结构定义管理"],
+        "summary": "获取表结构定义详情",
+        "description": "根据条件获取表结构定义详情",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetSchemaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/schemas/delete": {
+      "post": {
+        "tags": ["表结构定义管理"],
+        "summary": "删除表结构定义",
+        "description": "将表结构定义标记为非活跃状态",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteSchemaRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/enterprises/list": {
+      "post": {
+        "tags": ["企业管理"],
+        "summary": "获取企业列表",
+        "description": "获取所有企业信息",
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnterpriseListResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/enterprises/create": {
+      "post": {
+        "tags": ["企业管理"],
+        "summary": "创建企业",
+        "description": "创建新的企业配置",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEnterpriseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnterpriseResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/connections/stats": {
+      "post": {
+        "tags": ["连接管理"],
+        "summary": "获取连接池统计",
+        "description": "获取数据库连接池的统计信息",
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionStatsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/connections/close": {
+      "post": {
+        "tags": ["连接管理"],
+        "summary": "关闭所有连接",
+        "description": "关闭所有数据库连接",
+        "responses": {
+          "200": {
+            "description": "关闭成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BaseResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "message": {
+            "type": "string",
+            "example": "操作成功"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "message": {
+            "type": "string",
+            "example": "操作失败"
+          },
+          "error": {
+            "type": "string",
+            "example": "详细错误信息"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00.000Z"
+          },
+          "service": {
+            "type": "string",
+            "example": "mysql-update"
+          }
+        }
+      },
+      "TableColumn": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "列名",
+            "example": "user_id"
+          },
+          "type": {
+            "type": "string",
+            "description": "数据类型",
+            "example": "BIGINT"
+          },
+          "length": {
+            "type": "integer",
+            "description": "长度",
+            "example": 255
+          },
+          "primaryKey": {
+            "type": "boolean",
+            "description": "是否为主键",
+            "example": true
+          },
+          "autoIncrement": {
+            "type": "boolean",
+            "description": "是否自增",
+            "example": true
+          },
+          "allowNull": {
+            "type": "boolean",
+            "description": "是否允许为空",
+            "example": false
+          },
+          "defaultValue": {
+            "type": "string",
+            "description": "默认值",
+            "example": "CURRENT_TIMESTAMP"
+          },
+          "unique": {
+            "type": "boolean",
+            "description": "是否唯一",
+            "example": false
+          },
+          "comment": {
+            "type": "string",
+            "description": "注释",
+            "example": "用户ID"
+          }
+        }
+      },
+      "TableIndex": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "索引名",
+            "example": "idx_username"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "索引字段",
+            "example": ["username"]
+          },
+          "unique": {
+            "type": "boolean",
+            "description": "是否唯一索引",
+            "example": true
+          }
+        }
+      },
+      "SchemaDefinition": {
+        "type": "object",
+        "properties": {
+          "tableName": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableColumn"
+            },
+            "description": "列定义"
+          },
+          "indexes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableIndex"
+            },
+            "description": "索引定义"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["DROP"],
+            "description": "特殊操作（删除表）"
+          }
+        }
+      },
+      "TableSchema": {
+        "type": "object",
+        "properties": {
+          "table_schema_id": {
+            "type": "integer",
+            "description": "表结构ID",
+            "example": 1
+          },
+          "table_name": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "database_type": {
+            "type": "string",
+            "enum": ["main", "log", "order", "static"],
+            "description": "数据库类型",
+            "example": "main"
+          },
+          "partition_type": {
+            "type": "string",
+            "enum": ["store", "time", "none"],
+            "description": "分区类型",
+            "example": "none"
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "版本号",
+            "example": "1.0.0"
+          },
+          "schema_definition": {
+            "$ref": "#/components/schemas/SchemaDefinition"
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "是否激活",
+            "example": true
+          },
+          "upgrade_notes": {
+            "type": "string",
+            "description": "升级说明",
+            "example": "初始版本创建用户表"
+          },
+          "time_interval": {
+            "type": "string",
+            "description": "时间间隔（时间分表）",
+            "example": "month"
+          },
+          "time_start_date": {
+            "type": "string",
+            "format": "date",
+            "description": "开始日期（时间分表）",
+            "example": "2024-01-01"
+          },
+          "time_end_date": {
+            "type": "string",
+            "format": "date",
+            "description": "结束日期（时间分表）",
+            "example": "2024-12-31"
+          },
+          "time_format": {
+            "type": "string",
+            "description": "时间格式（时间分表）",
+            "example": "_YYYY_MM"
+          },
+          "create_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间"
+          },
+          "update_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间"
+          }
+        }
+      },
+      "Enterprise": {
+        "type": "object",
+        "properties": {
+          "enterprise_id": {
+            "type": "integer",
+            "description": "企业ID",
+            "example": 1
+          },
+          "enterprise_key": {
+            "type": "string",
+            "description": "企业标识",
+            "example": "company001"
+          },
+          "enterprise_name": {
+            "type": "string",
+            "description": "企业名称",
+            "example": "示例公司"
+          },
+          "database_name": {
+            "type": "string",
+            "description": "数据库名",
+            "example": "company001_db"
+          },
+          "database_hostname": {
+            "type": "string",
+            "description": "数据库主机",
+            "example": "localhost"
+          },
+          "database_port": {
+            "type": "integer",
+            "description": "数据库端口",
+            "example": 3306
+          },
+          "database_username": {
+            "type": "string",
+            "description": "数据库用户名",
+            "example": "company001_user"
+          },
+          "database_password": {
+            "type": "string",
+            "description": "数据库密码",
+            "example": "secure_password"
+          },
+          "create_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间"
+          },
+          "update_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间"
+          }
+        }
+      },
+      "ExecuteMigrationRequest": {
+        "type": "object",
+        "required": ["table_name", "database_type", "partition_type"],
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "database_type": {
+            "type": "string",
+            "enum": ["main", "log", "order", "static"],
+            "description": "数据库类型",
+            "example": "main"
+          },
+          "partition_type": {
+            "type": "string",
+            "enum": ["store", "time", "none"],
+            "description": "分区类型",
+            "example": "none"
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "版本号（可选，默认使用最新版本）",
+            "example": "1.2.0"
+          }
+        }
+      },
+      "CreateSchemaRequest": {
+        "type": "object",
+        "required": [
+          "table_name",
+          "database_type",
+          "partition_type",
+          "schema_version",
+          "schema_definition"
+        ],
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "database_type": {
+            "type": "string",
+            "enum": ["main", "log", "order", "static"],
+            "description": "数据库类型",
+            "example": "main"
+          },
+          "partition_type": {
+            "type": "string",
+            "enum": ["store", "time", "none"],
+            "description": "分区类型",
+            "example": "none"
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "版本号",
+            "example": "1.0.0"
+          },
+          "schema_definition": {
+            "$ref": "#/components/schemas/SchemaDefinition"
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "是否激活",
+            "default": true
+          },
+          "upgrade_notes": {
+            "type": "string",
+            "description": "升级说明",
+            "example": "初始版本创建用户表"
+          },
+          "time_interval": {
+            "type": "string",
+            "description": "时间间隔（时间分表）",
+            "example": "month"
+          },
+          "time_start_date": {
+            "type": "string",
+            "format": "date",
+            "description": "开始日期（时间分表）",
+            "example": "2024-01-01"
+          },
+          "time_end_date": {
+            "type": "string",
+            "format": "date",
+            "description": "结束日期（时间分表）",
+            "example": "2024-12-31"
+          },
+          "time_format": {
+            "type": "string",
+            "description": "时间格式（时间分表）",
+            "example": "_YYYY_MM"
+          }
+        }
+      },
+      "GetSchemaRequest": {
+        "type": "object",
+        "required": ["table_name", "database_type", "partition_type"],
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "database_type": {
+            "type": "string",
+            "enum": ["main", "log", "order", "static"],
+            "description": "数据库类型",
+            "example": "main"
+          },
+          "partition_type": {
+            "type": "string",
+            "enum": ["store", "time", "none"],
+            "description": "分区类型",
+            "example": "none"
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "版本号（可选）",
+            "example": "1.0.0"
+          }
+        }
+      },
+      "DeleteSchemaRequest": {
+        "type": "object",
+        "required": ["table_name", "database_type", "partition_type"],
+        "properties": {
+          "table_name": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "database_type": {
+            "type": "string",
+            "enum": ["main", "log", "order", "static"],
+            "description": "数据库类型",
+            "example": "main"
+          },
+          "partition_type": {
+            "type": "string",
+            "enum": ["store", "time", "none"],
+            "description": "分区类型",
+            "example": "none"
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "版本号（可选）",
+            "example": "1.0.0"
+          }
+        }
+      },
+      "CreateEnterpriseRequest": {
+        "type": "object",
+        "required": [
+          "enterprise_key",
+          "enterprise_name",
+          "database_name",
+          "database_hostname",
+          "database_username",
+          "database_password"
+        ],
+        "properties": {
+          "enterprise_key": {
+            "type": "string",
+            "description": "企业标识",
+            "example": "company001"
+          },
+          "enterprise_name": {
+            "type": "string",
+            "description": "企业名称",
+            "example": "示例公司"
+          },
+          "database_name": {
+            "type": "string",
+            "description": "数据库名",
+            "example": "company001_db"
+          },
+          "database_hostname": {
+            "type": "string",
+            "description": "数据库主机",
+            "example": "localhost"
+          },
+          "database_port": {
+            "type": "integer",
+            "description": "数据库端口",
+            "default": 3306,
+            "example": 3306
+          },
+          "database_username": {
+            "type": "string",
+            "description": "数据库用户名",
+            "example": "company001_user"
+          },
+          "database_password": {
+            "type": "string",
+            "description": "数据库密码",
+            "example": "secure_password"
+          }
+        }
+      },
+      "DetectionResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "description": "检测结果，如果没有变化则为null"
+              }
+            }
+          }
+        ]
+      },
+      "AllDetectionResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "description": "所有变化的表"
+              },
+              "new_tables": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "description": "新增的表"
+              },
+              "deleted_tables": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "description": "删除的表"
+              },
+              "summary": {
+                "type": "object",
+                "properties": {
+                  "total_tables": { "type": "integer" },
+                  "new_tables": { "type": "integer" },
+                  "changed_tables": { "type": "integer" },
+                  "deleted_tables": { "type": "integer" },
+                  "unchanged_tables": { "type": "integer" }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "DetectionSaveResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/AllDetectionResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "summary": {
+                "type": "object",
+                "properties": {
+                  "saved": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "BaseTablesResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "tables": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "TABLE_NAME": { "type": "string" },
+                        "ENGINE": { "type": "string" },
+                        "TABLE_COLLATION": { "type": "string" },
+                        "TABLE_ROWS": { "type": "integer" },
+                        "DATA_LENGTH": { "type": "integer" },
+                        "INDEX_LENGTH": { "type": "integer" },
+                        "AUTO_INCREMENT": { "type": "integer" }
+                      }
+                    }
+                  },
+                  "summary": {
+                    "type": "object",
+                    "properties": {
+                      "total_tables": { "type": "integer" },
+                      "engines": { "type": "object" },
+                      "collations": { "type": "object" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TableInfoResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "table_name": { "type": "string" },
+                  "columns": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "COLUMN_NAME": { "type": "string" },
+                        "DATA_TYPE": { "type": "string" },
+                        "CHARACTER_MAXIMUM_LENGTH": { "type": "integer" },
+                        "IS_NULLABLE": { "type": "string" },
+                        "COLUMN_DEFAULT": { "type": "string" },
+                        "COLUMN_KEY": { "type": "string" },
+                        "EXTRA": { "type": "string" },
+                        "COLUMN_COMMENT": { "type": "string" }
+                      }
+                    }
+                  },
+                  "indexes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "INDEX_NAME": { "type": "string" },
+                        "COLUMN_NAME": { "type": "string" },
+                        "NON_UNIQUE": { "type": "integer" },
+                        "SEQ_IN_INDEX": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MigrationResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "table_name": { "type": "string" },
+                  "database_type": { "type": "string" },
+                  "partition_type": { "type": "string" },
+                  "schema_version": { "type": "string" },
+                  "enterprises_processed": { "type": "integer" },
+                  "operations_performed": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MigrateAllResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "summary": {
+                    "type": "object",
+                    "properties": {
+                      "total_tables": { "type": "integer" },
+                      "successful_migrations": { "type": "integer" },
+                      "failed_migrations": { "type": "integer" },
+                      "total_enterprises": { "type": "integer" }
+                    }
+                  },
+                  "results": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "table_name": { "type": "string" },
+                        "database_type": { "type": "string" },
+                        "success": { "type": "boolean" },
+                        "enterprises_processed": { "type": "integer" },
+                        "error": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SchemaResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/TableSchema"
+              }
+            }
+          }
+        ]
+      },
+      "SchemaListResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TableSchema"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SchemaHistoryResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TableSchema"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SchemaDetailResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/TableSchema"
+              }
+            }
+          }
+        ]
+      },
+      "EnterpriseResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Enterprise"
+              }
+            }
+          }
+        ]
+      },
+      "EnterpriseListResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Enterprise"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ConnectionStatsResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "total_connections": { "type": "integer" },
+                  "active_connections": { "type": "integer" },
+                  "idle_connections": { "type": "integer" },
+                  "enterprises": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "enterprise_key": { "type": "string" },
+                        "connection_status": { "type": "string" },
+                        "last_used": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "请求参数错误",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "资源不存在",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "服务器内部错误",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    }
+  }
+}
