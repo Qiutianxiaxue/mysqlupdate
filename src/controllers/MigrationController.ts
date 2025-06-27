@@ -367,10 +367,10 @@ export class MigrationController {
       const { table_name, database_type, partition_type, schema_version } =
         req.body;
 
-      if (!table_name || !database_type) {
+      if (!table_name || !database_type || !partition_type) {
         res.status(400).json({
           success: false,
-          message: "缺少必需字段: table_name, database_type",
+          message: "缺少必需字段: table_name, database_type, partition_type",
         });
         return;
       }
@@ -385,10 +385,7 @@ export class MigrationController {
       }
 
       // 验证分区类型（如果提供）
-      if (
-        partition_type &&
-        !["store", "time", "none"].includes(partition_type)
-      ) {
+      if (!["store", "time", "none"].includes(partition_type)) {
         res.status(400).json({
           success: false,
           message: "partition_type 必须是: store, time, none 之一",

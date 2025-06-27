@@ -20,6 +20,7 @@ interface ColumnDefinition {
 
 interface TableDefinition {
   tableName: string;
+  action?: "DROP"; // 迁移动作：只有删除需要显式指定
   columns: ColumnDefinition[];
   indexes?: Array<{
     name: string;
@@ -347,7 +348,7 @@ export class DatabaseMigrationService {
   }
 
   /**
-   * 使用指定连接迁移表（统一的创建/升级逻辑）
+   * 使用指定连接迁移表（统一的创建/升级/删除逻辑）
    */
   private async migrateTableWithConnection(
     connection: Sequelize,
@@ -360,6 +361,15 @@ export class DatabaseMigrationService {
       logger.info(`   - 原始表名: ${tableDefinition.tableName}`);
       logger.info(`   - 后缀ID: ${storeId || "none"}`);
       logger.info(`   - 最终表名: ${tableName}`);
+      logger.info(`   - 迁移动作: ${tableDefinition.action || "自动检测"}`);
+
+      // 检查是否是删除操作
+      if (tableDefinition.action === "DROP") {
+        logger.info(`🗑️ 执行删除表操作: ${tableName}`);
+        await this.dropTableWithConnection(connection, tableName);
+        logger.info(`🎉 表 ${tableName} 删除完成`);
+        return;
+      }
 
       // 检查表是否存在
       const tableExists = await this.tableExistsWithConnection(
@@ -1769,6 +1779,433 @@ export class DatabaseMigrationService {
       .replace(/M/g, month.toString())
       .replace(/DD/g, String(day).padStart(2, "0"))
       .replace(/D/g, day.toString());
+  }
+
+  /**
+   * 使用指定连接删除单个表
+   */
+  private async dropTableWithConnection(
+    connection: Sequelize,
+    tableName: string
+  ): Promise<void> {
+    try {
+      // 检查表是否存在
+      const tableExists = await this.tableExistsWithConnection(
+        connection,
+        tableName
+      );
+
+      if (!tableExists) {
+        logger.info(`ℹ️ 表 ${tableName} 不存在，跳过删除`);
+        return;
+      }
+
+      const dropSQL = `DROP TABLE IF EXISTS \`${tableName}\``;
+      logger.info(`执行删除SQL: ${dropSQL}`);
+
+      // 记录SQL执行历史
+      if (this.currentSchema) {
+        await this.executeAndRecordSql(
+          connection,
+          tableName,
+          this.currentSchema.database_type,
+          this.currentSchema.partition_type,
+          this.currentSchema.schema_version,
+          "DROP",
+          dropSQL
+        );
+      } else {
+        await connection.query(dropSQL);
+      }
+
+      logger.info(`✅ 表 ${tableName} 删除成功`);
+    } catch (error) {
+      logger.error(`删除表 ${tableName} 失败:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 删除表
+   * 根据表名、数据库类型删除对应的表
+   */
+  async dropTable(
+    tableName: string,
+    databaseType: "main" | "log" | "order" | "static",
+    partitionType?: string
+  ): Promise<{
+    success: boolean;
+    message: string;
+    droppedTables: string[];
+    errors?: string[];
+  }> {
+    try {
+      // 生成删除批次ID
+      this.currentMigrationBatch = `drop_${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(
+        0,
+        8
+      )}`;
+
+      logger.info(
+        `🗑️ 开始删除表: ${tableName}, 数据库类型: ${databaseType}, 分区类型: ${
+          partitionType || "自动检测"
+        }, 批次: ${this.currentMigrationBatch}`
+      );
+
+      // 获取所有企业
+      const enterprises = await Enterprise.findAll({
+        where: { status: 1 },
+      });
+
+      const droppedTables: string[] = [];
+      const errors: string[] = [];
+
+      for (const enterprise of enterprises) {
+        try {
+          const result = await this.dropTableForEnterprise(
+            enterprise,
+            tableName,
+            databaseType,
+            partitionType
+          );
+          droppedTables.push(...result.droppedTables);
+          if (result.errors && result.errors.length > 0) {
+            errors.push(...result.errors);
+          }
+        } catch (error) {
+          const errorMsg = `企业 ${enterprise.enterprise_name} (${
+            enterprise.enterprise_id
+          }) 删除表失败: ${
+            error instanceof Error ? error.message : "未知错误"
+          }`;
+          logger.error(errorMsg);
+          errors.push(errorMsg);
+        }
+      }
+
+      const success = errors.length === 0;
+      const message = success
+        ? `表 ${tableName} 删除成功，共删除 ${droppedTables.length} 个表`
+        : `表 ${tableName} 删除完成，但有 ${errors.length} 个错误`;
+
+      logger.info(
+        `🎉 删除操作完成 - 成功删除: ${droppedTables.length} 个表, 错误: ${errors.length} 个`
+      );
+
+      const result: {
+        success: boolean;
+        message: string;
+        droppedTables: string[];
+        errors?: string[];
+      } = {
+        success,
+        message,
+        droppedTables,
+      };
+
+      if (errors.length > 0) {
+        result.errors = errors;
+      }
+
+      return result;
+    } catch (error) {
+      logger.error("删除表操作失败:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * 为单个企业删除表
+   */
+  private async dropTableForEnterprise(
+    enterprise: Enterprise,
+    tableName: string,
+    databaseType: "main" | "log" | "order" | "static",
+    partitionType?: string
+  ): Promise<{
+    droppedTables: string[];
+    errors?: string[];
+  }> {
+    try {
+      logger.info(
+        `🗑️ 为企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 删除表: ${tableName}`
+      );
+
+      // 获取对应数据库类型的连接
+      const connection = await this.connectionManager.getConnection(
+        enterprise,
+        databaseType
+      );
+
+      const droppedTables: string[] = [];
+      const errors: string[] = [];
+
+      // 根据分区类型确定要删除的表
+      if (partitionType === "store") {
+        // 门店分表：删除所有门店相关的表
+        const storePattern = `${tableName}_store_%`;
+        const tables = await this.getTablesMatchingPattern(
+          connection,
+          storePattern
+        );
+
+        for (const table of tables) {
+          try {
+            await this.dropSingleTable(
+              connection,
+              table,
+              databaseType,
+              partitionType,
+              "1.0.0"
+            );
+            droppedTables.push(table);
+            logger.info(`✅ 成功删除门店分表: ${table}`);
+          } catch (error) {
+            const errorMsg = `删除门店分表 ${table} 失败: ${
+              error instanceof Error ? error.message : "未知错误"
+            }`;
+            logger.error(errorMsg);
+            errors.push(errorMsg);
+          }
+        }
+      } else if (partitionType === "time") {
+        // 时间分表：删除所有时间相关的表
+        const timePattern = `${tableName}%`;
+        const tables = await this.getTablesMatchingPattern(
+          connection,
+          timePattern
+        );
+
+        for (const table of tables) {
+          // 验证是否是时间分表格式
+          if (table !== tableName && table.startsWith(tableName)) {
+            try {
+              await this.dropSingleTable(
+                connection,
+                table,
+                databaseType,
+                partitionType,
+                "1.0.0"
+              );
+              droppedTables.push(table);
+              logger.info(`✅ 成功删除时间分表: ${table}`);
+            } catch (error) {
+              const errorMsg = `删除时间分表 ${table} 失败: ${
+                error instanceof Error ? error.message : "未知错误"
+              }`;
+              logger.error(errorMsg);
+              errors.push(errorMsg);
+            }
+          }
+        }
+      } else {
+        // 普通表：只删除指定表名的表
+        const tableExists = await this.tableExistsWithConnection(
+          connection,
+          tableName
+        );
+
+        if (tableExists) {
+          try {
+            await this.dropSingleTable(
+              connection,
+              tableName,
+              databaseType,
+              partitionType || "none",
+              "1.0.0"
+            );
+            droppedTables.push(tableName);
+            logger.info(`✅ 成功删除表: ${tableName}`);
+          } catch (error) {
+            const errorMsg = `删除表 ${tableName} 失败: ${
+              error instanceof Error ? error.message : "未知错误"
+            }`;
+            logger.error(errorMsg);
+            errors.push(errorMsg);
+          }
+        } else {
+          logger.info(`ℹ️ 表 ${tableName} 不存在，跳过删除`);
+        }
+      }
+
+      const result: {
+        droppedTables: string[];
+        errors?: string[];
+      } = {
+        droppedTables,
+      };
+
+      if (errors.length > 0) {
+        result.errors = errors;
+      }
+
+      return result;
+    } catch (error) {
+      logger.error(
+        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 删除表失败:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * 获取匹配模式的表名列表
+   */
+  private async getTablesMatchingPattern(
+    connection: Sequelize,
+    pattern: string
+  ): Promise<string[]> {
+    try {
+      const query = `
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME LIKE ?
+        ORDER BY TABLE_NAME
+      `;
+
+      const [results] = await connection.query(query, {
+        replacements: [pattern],
+        type: "SELECT",
+      });
+
+      let tables: string[] = [];
+      if (Array.isArray(results)) {
+        tables = results.map((row: any) => row.TABLE_NAME);
+      } else if (results && typeof results === "object") {
+        tables = Object.values(results).map((row: any) => row.TABLE_NAME);
+      }
+
+      return tables;
+    } catch (error) {
+      logger.error(`获取匹配模式 ${pattern} 的表列表失败:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * 删除单个表
+   */
+  private async dropSingleTable(
+    connection: Sequelize,
+    tableName: string,
+    databaseType: string,
+    partitionType: string,
+    schemaVersion: string
+  ): Promise<void> {
+    try {
+      const dropSQL = `DROP TABLE IF EXISTS \`${tableName}\``;
+      logger.info(`执行删除SQL: ${dropSQL}`);
+
+      // 记录SQL执行历史
+      await this.executeAndRecordSql(
+        connection,
+        tableName,
+        databaseType,
+        partitionType,
+        schemaVersion,
+        "DROP",
+        dropSQL
+      );
+
+      logger.info(`✅ 表 ${tableName} 删除成功`);
+    } catch (error) {
+      logger.error(`删除表 ${tableName} 失败:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 批量删除表（根据检测到的删除表列表）
+   */
+  async dropDeletedTables(
+    deletedTables: string[],
+    databaseType: "main" | "log" | "order" | "static"
+  ): Promise<{
+    success: boolean;
+    message: string;
+    totalDeleted: number;
+    results: Array<{
+      tableName: string;
+      success: boolean;
+      message: string;
+      droppedTables: string[];
+      errors?: string[];
+    }>;
+  }> {
+    try {
+      logger.info(
+        `🗑️ 开始批量删除表: ${deletedTables.length} 个, 数据库类型: ${databaseType}`
+      );
+
+      const results: Array<{
+        tableName: string;
+        success: boolean;
+        message: string;
+        droppedTables: string[];
+        errors?: string[];
+      }> = [];
+
+      let totalDeleted = 0;
+
+      for (const tableName of deletedTables) {
+        try {
+          const result = await this.dropTable(tableName, databaseType);
+          const resultItem: {
+            tableName: string;
+            success: boolean;
+            message: string;
+            droppedTables: string[];
+            errors?: string[];
+          } = {
+            tableName,
+            success: result.success,
+            message: result.message,
+            droppedTables: result.droppedTables,
+          };
+
+          if (result.errors) {
+            resultItem.errors = result.errors;
+          }
+
+          results.push(resultItem);
+          totalDeleted += result.droppedTables.length;
+        } catch (error) {
+          const errorMsg = `删除表 ${tableName} 失败: ${
+            error instanceof Error ? error.message : "未知错误"
+          }`;
+          logger.error(errorMsg);
+          results.push({
+            tableName,
+            success: false,
+            message: errorMsg,
+            droppedTables: [],
+            errors: [errorMsg],
+          });
+        }
+      }
+
+      const successCount = results.filter((r) => r.success).length;
+      const success = successCount === deletedTables.length;
+      const message = success
+        ? `批量删除表成功，共删除 ${totalDeleted} 个表`
+        : `批量删除表完成，成功: ${successCount}/${deletedTables.length} 个表，共删除 ${totalDeleted} 个表`;
+
+      logger.info(
+        `🎉 批量删除操作完成 - 成功: ${successCount}/${deletedTables.length} 个表, 总删除: ${totalDeleted} 个表`
+      );
+
+      return {
+        success,
+        message,
+        totalDeleted,
+        results,
+      };
+    } catch (error) {
+      logger.error("批量删除表操作失败:", error);
+      throw error;
+    }
   }
 
   /**

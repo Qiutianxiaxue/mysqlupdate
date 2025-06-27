@@ -186,10 +186,13 @@ export class SchemaDetectionService {
 
         // 分析表的状态，考虑分区配置
         const { newTables, deletedTables, existingTables } =
-          this.analyzeTablesWithPartition(baseDbTables, typeSchemaDefinitions);
+          await this.analyzeTablesWithPartition(
+            baseDbTables,
+            typeSchemaDefinitions
+          );
 
         logger.info(
-          `${databaseType} - 新表: ${newTables.length}, 删除: ${deletedTables.length}, 检查: ${existingTables.length}`
+          `${databaseType} - 新表: ${newTables.length}, 需要删除处理: ${deletedTables.length}, 检查: ${existingTables.length}`
         );
 
         const typeResults: TableSchemaChange[] = [];
@@ -230,12 +233,28 @@ export class SchemaDetectionService {
           }
         }
 
-        // 3. 记录已删除的表
-        if (deletedTables.length > 0) {
+        // 3. 处理需要删除的表
+        const actualDeletedTables: string[] = []; // 实际需要生成删除配置的表
+        for (const tableName of deletedTables) {
+          try {
+            const deleteTableChange = await this.generateDeleteTableSchema(
+              tableName,
+              databaseType
+            );
+            if (deleteTableChange) {
+              typeResults.push(deleteTableChange);
+              actualDeletedTables.push(tableName); // 只有真正生成了删除配置的表才加入
+            }
+          } catch (error) {
+            logger.error(`处理删除表 ${tableName} 时出错:`, error);
+          }
+        }
+
+        if (actualDeletedTables.length > 0) {
           logger.warn(
-            `${databaseType} 类型检测到 ${
-              deletedTables.length
-            } 个表已删除: ${deletedTables.join(", ")}`
+            `${databaseType} 类型生成了 ${
+              actualDeletedTables.length
+            } 个表的删除配置: ${actualDeletedTables.join(", ")}`
           );
         }
 
@@ -244,13 +263,13 @@ export class SchemaDetectionService {
         if (databaseType === "main") {
           allNewTables.push(...newTables);
         }
-        allDeletedTables.push(...deletedTables);
+        allDeletedTables.push(...actualDeletedTables); // 使用实际生成删除配置的表
 
         byDatabaseType[databaseType] = {
           checked: baseDbTables.length + deletedTables.length,
           changes: typeResults.length,
           new_tables: databaseType === "main" ? newTables.length : 0,
-          deleted_tables: deletedTables.length,
+          deleted_tables: actualDeletedTables.length, // 使用实际生成删除配置的表数量
         };
       }
 
@@ -321,16 +340,93 @@ export class SchemaDetectionService {
   }
 
   /**
+   * 为删除的表生成删除配置或检查现有删除配置
+   */
+  private async generateDeleteTableSchema(
+    tableName: string,
+    databaseType: "main" | "log" | "order" | "static"
+  ): Promise<TableSchemaChange | null> {
+    try {
+      logger.info(`处理删除表 ${tableName} 的配置`);
+
+      // 获取该表在TableSchema中的最新版本
+      const latestSchema = await this.getLatestTableSchema(
+        tableName,
+        databaseType
+      );
+
+      if (!latestSchema) {
+        logger.warn(
+          `表 ${tableName} 在TableSchema中没有记录，无法生成删除配置`
+        );
+        return null;
+      }
+
+      try {
+        const existingDefinition = JSON.parse(latestSchema.schema_definition);
+
+        // 如果最新版本已经是删除操作，不需要生成新的版本
+        if (existingDefinition.action === "DROP") {
+          logger.info(
+            `表 ${tableName} 已配置为删除 (版本 ${latestSchema.schema_version})，无需重新生成`
+          );
+          return null;
+        }
+      } catch (error) {
+        logger.error(`解析表 ${tableName} 的schema_definition失败:`, error);
+      }
+
+      // 生成删除配置的schema定义
+      const deleteSchemaDefinition = {
+        tableName: tableName,
+        action: "DROP", // 标记为删除操作
+        columns: [], // 删除操作时列定义为空
+        indexes: [], // 删除操作时索引定义为空
+      };
+
+      // 生成新版本号
+      const newVersion = this.generateNewVersion(latestSchema.schema_version);
+
+      const result: TableSchemaChange = {
+        table_name: tableName,
+        database_type: databaseType,
+        partition_type: latestSchema.partition_type,
+        current_version: latestSchema.schema_version,
+        new_version: newVersion,
+        schema_definition: JSON.stringify(deleteSchemaDefinition),
+        changes_detected: ["表需要删除"],
+        upgrade_notes: `检测到表 ${tableName} 已从基准数据库中删除，生成删除配置`,
+      };
+
+      // 保留分区配置信息
+      if (latestSchema.time_interval) {
+        result.time_interval = latestSchema.time_interval;
+      }
+      if (latestSchema.time_format) {
+        result.time_format = latestSchema.time_format;
+      }
+
+      logger.info(
+        `成功为删除表 ${tableName} 生成删除配置，版本: ${newVersion}`
+      );
+      return result;
+    } catch (error) {
+      logger.error(`处理删除表 ${tableName} 失败:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * 分析表状态，考虑分区配置
    */
-  private analyzeTablesWithPartition(
+  private async analyzeTablesWithPartition(
     baseDbTables: string[],
     schemaDefinitions: any[]
-  ): {
+  ): Promise<{
     newTables: string[];
     deletedTables: string[];
     existingTables: string[];
-  } {
+  }> {
     const definedTables = schemaDefinitions.map((s) => s.table_name);
     const newTables: string[] = [];
     const deletedTables: string[] = [];
@@ -372,7 +468,7 @@ export class SchemaDetectionService {
       }
     }
 
-    // 检查已删除的表（在schema中定义但基准库中不存在）
+    // 检查需要删除的表
     for (const definedTable of definedTables) {
       const partitionConfig = partitionRules.get(definedTable);
       let foundInBase = false;
@@ -390,6 +486,7 @@ export class SchemaDetectionService {
         }
       }
 
+      // 如果基准数据库中不存在该表，检查是否需要生成删除配置
       if (!foundInBase) {
         deletedTables.push(definedTable);
       }
