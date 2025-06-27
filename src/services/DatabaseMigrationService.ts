@@ -664,7 +664,7 @@ export class DatabaseMigrationService {
           if (col.primaryKey && hasSinglePrimaryKey)
             definition += " PRIMARY KEY";
           if (col.autoIncrement) definition += " AUTO_INCREMENT";
-          if (!col.allowNull) definition += " NOT NULL";
+          if (col.allowNull === false) definition += " NOT NULL";
           if (col.unique) definition += " UNIQUE";
 
           // 处理默认值
@@ -1078,19 +1078,9 @@ export class DatabaseMigrationService {
         );
       }
 
-      // 检查nullable
-      const expectedNullable = definedColumn.allowNull !== false;
-      logger.info(`  - allowNull属性检查:`);
-      logger.info(
-        `    - definedColumn.allowNull: ${JSON.stringify(
-          definedColumn.allowNull
-        )} (${typeof definedColumn.allowNull})`
-      );
-      logger.info(`    - expectedNullable: ${expectedNullable}`);
-      logger.info(`    - currentNullable: ${currentNullable}`);
-      logger.info(
-        `    - 是否需要更新: ${currentNullable !== expectedNullable}`
-      );
+      // 检查nullable - 直接使用TableSchema中明确设置的allowNull值
+      // SchemaDetectionService已经明确设置了allowNull为true/false，不需要默认值推断
+      const expectedNullable = definedColumn.allowNull === true;
 
       if (currentNullable !== expectedNullable) {
         needsUpdate = true;
@@ -1183,7 +1173,8 @@ export class DatabaseMigrationService {
             columnDefinition += " AUTO_INCREMENT";
           }
 
-          if (!definedColumn.allowNull) {
+          // 使用明确的boolean值判断，避免undefined导致的错误
+          if (definedColumn.allowNull === false) {
             columnDefinition += " NOT NULL";
           } else {
             columnDefinition += " NULL";
@@ -1779,7 +1770,7 @@ export class DatabaseMigrationService {
       // 构建列定义（不包含PRIMARY KEY和AUTO_INCREMENT，将在后面单独处理）
       let columnDefinition = `\`${column.name}\` ${this.getDataType(column)}`;
 
-      if (!column.allowNull) columnDefinition += " NOT NULL";
+      if (column.allowNull === false) columnDefinition += " NOT NULL";
       if (column.unique && !column.primaryKey) columnDefinition += " UNIQUE"; // 主键自动包含唯一性
 
       // 处理默认值
@@ -1835,7 +1826,7 @@ export class DatabaseMigrationService {
           column
         )} AUTO_INCREMENT`;
 
-        if (!column.allowNull) modifyColumnDefinition += " NOT NULL";
+        if (column.allowNull === false) modifyColumnDefinition += " NOT NULL";
         if (column.unique && !column.primaryKey)
           modifyColumnDefinition += " UNIQUE";
         if (column.comment)
