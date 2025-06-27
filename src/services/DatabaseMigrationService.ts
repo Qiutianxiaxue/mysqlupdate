@@ -612,7 +612,7 @@ export class DatabaseMigrationService {
 
       // 备用方法: 尝试直接查询表
       try {
-        await connection.query(`SELECT 1 FROM ${tableName} LIMIT 1`);
+        await connection.query(`SELECT 1 FROM \`${tableName}\` LIMIT 1`);
         logger.info(`通过直接查询确认表 ${tableName} 存在`);
         return true;
       } catch (queryError) {
@@ -636,7 +636,7 @@ export class DatabaseMigrationService {
     try {
       const columnDefinitions = tableDefinition.columns
         .map((col) => {
-          let definition = `${col.name} ${this.getDataType(col)}`;
+          let definition = `\`${col.name}\` ${this.getDataType(col)}`;
 
           if (col.primaryKey) definition += " PRIMARY KEY";
           if (col.autoIncrement) definition += " AUTO_INCREMENT";
@@ -651,13 +651,14 @@ export class DatabaseMigrationService {
         })
         .join(", ");
 
-      let createTableSQL = `CREATE TABLE ${tableName} (${columnDefinitions}`;
+      let createTableSQL = `CREATE TABLE \`${tableName}\` (${columnDefinitions}`;
 
       // 添加索引
       if (tableDefinition.indexes && tableDefinition.indexes.length > 0) {
         const indexDefinitions = tableDefinition.indexes.map((index) => {
           const unique = index.unique ? "UNIQUE" : "";
-          return `${unique} KEY ${index.name} (${index.fields.join(", ")})`;
+          const fields = index.fields.map((field) => `\`${field}\``).join(", ");
+          return `${unique} KEY \`${index.name}\` (${fields})`;
         });
         createTableSQL += `, ${indexDefinitions.join(", ")}`;
       }
@@ -804,7 +805,7 @@ export class DatabaseMigrationService {
         try {
           logger.info(`尝试使用DESCRIBE命令获取列信息...`);
           const [describeResult] = await connection.query(
-            `DESCRIBE ${tableName}`
+            `DESCRIBE \`${tableName}\``
           );
 
           let columns: any[] = [];
@@ -930,7 +931,7 @@ export class DatabaseMigrationService {
       if (!definedColumnNames.includes(columnName)) {
         try {
           logger.info(`🗑️ 删除不再需要的列: ${columnName}`);
-          const dropSQL = `ALTER TABLE ${tableName} DROP COLUMN ${columnName}`;
+          const dropSQL = `ALTER TABLE \`${tableName}\` DROP COLUMN \`${columnName}\``;
           logger.info(`执行SQL: ${dropSQL}`);
           await connection.query(dropSQL);
           logger.info(`✅ 成功删除列: ${columnName}`);
@@ -1104,7 +1105,7 @@ export class DatabaseMigrationService {
           );
 
           // 构建ALTER COLUMN语句（不包含PRIMARY KEY，因为已单独处理）
-          let columnDefinition = `${definedColumn.name} ${this.getDataType(
+          let columnDefinition = `\`${definedColumn.name}\` ${this.getDataType(
             definedColumn
           )}`;
 
@@ -1131,7 +1132,7 @@ export class DatabaseMigrationService {
             columnDefinition += ` COMMENT '${definedColumn.comment}'`;
           }
 
-          let alterSQL = `ALTER TABLE ${tableName} MODIFY COLUMN ${columnDefinition}`;
+          let alterSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${columnDefinition}`;
 
           logger.info(`执行SQL: ${alterSQL}`);
 
@@ -1179,7 +1180,7 @@ export class DatabaseMigrationService {
       if (currentIsPrimaryKey && !expectedIsPrimaryKey) {
         // 移除主键
         logger.info(`🔄 移除表 ${tableName} 列 ${columnName} 的主键约束`);
-        const dropPrimaryKeySQL = `ALTER TABLE ${tableName} DROP PRIMARY KEY`;
+        const dropPrimaryKeySQL = `ALTER TABLE \`${tableName}\` DROP PRIMARY KEY`;
         logger.info(`执行SQL: ${dropPrimaryKeySQL}`);
 
         // 记录SQL执行历史
@@ -1201,7 +1202,7 @@ export class DatabaseMigrationService {
       } else if (!currentIsPrimaryKey && expectedIsPrimaryKey) {
         // 添加主键
         logger.info(`🔄 为表 ${tableName} 列 ${columnName} 添加主键约束`);
-        const addPrimaryKeySQL = `ALTER TABLE ${tableName} ADD PRIMARY KEY (${columnName})`;
+        const addPrimaryKeySQL = `ALTER TABLE \`${tableName}\` ADD PRIMARY KEY (\`${columnName}\`)`;
         logger.info(`执行SQL: ${addPrimaryKeySQL}`);
 
         // 记录SQL执行历史
@@ -1253,7 +1254,7 @@ export class DatabaseMigrationService {
 
       // 获取现有索引
       const [showIndexResult] = await connection.query(
-        `SHOW INDEX FROM ${tableName}`
+        `SHOW INDEX FROM \`${tableName}\``
       );
 
       let indexData: any[] = [];
@@ -1282,7 +1283,7 @@ export class DatabaseMigrationService {
         if (!definedIndexNames.includes(existingIndexName)) {
           try {
             logger.info(`🗑️ 删除不再需要的索引: ${existingIndexName}`);
-            const dropSQL = `DROP INDEX ${existingIndexName} ON ${tableName}`;
+            const dropSQL = `DROP INDEX \`${existingIndexName}\` ON \`${tableName}\``;
             logger.info(`执行SQL: ${dropSQL}`);
 
             // 记录SQL执行历史
@@ -1321,9 +1322,10 @@ export class DatabaseMigrationService {
           try {
             logger.info(`➕ 添加新索引: ${index.name}`);
             const unique = index.unique ? "UNIQUE" : "";
-            const sql = `CREATE ${unique} INDEX ${
-              index.name
-            } ON ${tableName} (${index.fields.join(", ")})`;
+            const fields = index.fields
+              .map((field) => `\`${field}\``)
+              .join(", ");
+            const sql = `CREATE ${unique} INDEX \`${index.name}\` ON \`${tableName}\` (${fields})`;
             logger.info(`执行SQL: ${sql}`);
 
             // 记录SQL执行历史
@@ -1377,23 +1379,130 @@ export class DatabaseMigrationService {
     column: ColumnDefinition
   ): Promise<void> {
     try {
-      let columnDefinition = `${column.name} ${this.getDataType(column)}`;
+      // 如果新列要设置为主键，需要先检查表中是否已经有主键
+      if (column.primaryKey) {
+        logger.info(`🔍 检查表 ${tableName} 的现有主键情况...`);
 
-      // 添加主键和自增属性（顺序很重要）
-      if (column.primaryKey) columnDefinition += " PRIMARY KEY";
-      if (column.autoIncrement) columnDefinition += " AUTO_INCREMENT";
+        // 查询现有的主键信息
+        const [existingPrimaryKeys] = await connection.query(
+          "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND COLUMN_KEY = 'PRI'",
+          { replacements: [tableName] }
+        );
+
+        let primaryKeyColumns: any[] = [];
+        if (Array.isArray(existingPrimaryKeys)) {
+          primaryKeyColumns = existingPrimaryKeys;
+        } else if (
+          existingPrimaryKeys &&
+          typeof existingPrimaryKeys === "object"
+        ) {
+          primaryKeyColumns = Object.values(existingPrimaryKeys);
+        }
+
+        if (primaryKeyColumns.length > 0) {
+          const existingPrimaryKeyNames = primaryKeyColumns.map(
+            (col) => col.COLUMN_NAME
+          );
+          logger.warn(
+            `⚠️ 表 ${tableName} 已存在主键: [${existingPrimaryKeyNames.join(
+              ", "
+            )}]`
+          );
+          logger.info(`🔄 先删除现有主键，然后添加新列并设为主键`);
+
+          // 先删除现有主键
+          const dropPrimaryKeySQL = `ALTER TABLE \`${tableName}\` DROP PRIMARY KEY`;
+          logger.info(`执行SQL: ${dropPrimaryKeySQL}`);
+
+          if (this.currentSchema) {
+            await this.executeAndRecordSql(
+              connection,
+              tableName,
+              this.currentSchema.database_type,
+              this.currentSchema.partition_type,
+              this.currentSchema.schema_version,
+              "ALTER",
+              dropPrimaryKeySQL
+            );
+          } else {
+            await connection.query(dropPrimaryKeySQL);
+          }
+        }
+      }
+
+      // 特殊处理AUTO_INCREMENT列
+      if (column.autoIncrement) {
+        logger.info(`🔢 处理AUTO_INCREMENT列: ${column.name}`);
+
+        // 检查表中是否已有AUTO_INCREMENT列
+        const [existingAutoIncColumns] = await connection.query(
+          "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND EXTRA LIKE '%auto_increment%'",
+          { replacements: [tableName] }
+        );
+
+        let autoIncColumns: any[] = [];
+        if (Array.isArray(existingAutoIncColumns)) {
+          autoIncColumns = existingAutoIncColumns;
+        } else if (
+          existingAutoIncColumns &&
+          typeof existingAutoIncColumns === "object"
+        ) {
+          autoIncColumns = Object.values(existingAutoIncColumns);
+        }
+
+        if (autoIncColumns.length > 0) {
+          const existingAutoIncNames = autoIncColumns.map(
+            (col) => col.COLUMN_NAME
+          );
+          logger.warn(
+            `⚠️ 表 ${tableName} 已存在AUTO_INCREMENT列: [${existingAutoIncNames.join(
+              ", "
+            )}]`
+          );
+          logger.info(`🔄 先移除现有AUTO_INCREMENT属性`);
+
+          // 移除现有AUTO_INCREMENT属性
+          for (const existingCol of existingAutoIncNames) {
+            const modifySQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`${existingCol}\` BIGINT NOT NULL`;
+            logger.info(`执行SQL: ${modifySQL}`);
+
+            if (this.currentSchema) {
+              await this.executeAndRecordSql(
+                connection,
+                tableName,
+                this.currentSchema.database_type,
+                this.currentSchema.partition_type,
+                this.currentSchema.schema_version,
+                "ALTER",
+                modifySQL
+              );
+            } else {
+              await connection.query(modifySQL);
+            }
+          }
+        }
+
+        // AUTO_INCREMENT列必须是键，如果不是主键，至少要是唯一键
+        if (!column.primaryKey && !column.unique) {
+          logger.info(`⚠️ AUTO_INCREMENT列必须是键，自动设置为唯一键`);
+          column.unique = true;
+        }
+      }
+
+      // 构建列定义（不包含PRIMARY KEY和AUTO_INCREMENT，将在后面单独处理）
+      let columnDefinition = `\`${column.name}\` ${this.getDataType(column)}`;
+
       if (!column.allowNull) columnDefinition += " NOT NULL";
-      if (column.unique) columnDefinition += " UNIQUE";
+      if (column.unique && !column.primaryKey) columnDefinition += " UNIQUE"; // 主键自动包含唯一性
       if (column.defaultValue !== undefined) {
         columnDefinition += this.getDefaultValue(column);
       }
       if (column.comment) columnDefinition += ` COMMENT '${column.comment}'`;
 
-      let alterSQL = `ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`;
-
+      // 先添加列（不设置主键和AUTO_INCREMENT）
+      let alterSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN ${columnDefinition}`;
       logger.info(`执行SQL: ${alterSQL}`);
 
-      // 记录SQL执行历史
       if (this.currentSchema) {
         await this.executeAndRecordSql(
           connection,
@@ -1408,6 +1517,58 @@ export class DatabaseMigrationService {
         await connection.query(alterSQL);
       }
 
+      // 如果需要设置为主键，单独执行
+      if (column.primaryKey) {
+        logger.info(`🔑 设置列 ${column.name} 为主键`);
+        const addPrimaryKeySQL = `ALTER TABLE \`${tableName}\` ADD PRIMARY KEY (\`${column.name}\`)`;
+        logger.info(`执行SQL: ${addPrimaryKeySQL}`);
+
+        if (this.currentSchema) {
+          await this.executeAndRecordSql(
+            connection,
+            tableName,
+            this.currentSchema.database_type,
+            this.currentSchema.partition_type,
+            this.currentSchema.schema_version,
+            "ALTER",
+            addPrimaryKeySQL
+          );
+        } else {
+          await connection.query(addPrimaryKeySQL);
+        }
+      }
+
+      // 最后设置AUTO_INCREMENT属性（必须在设置键之后）
+      if (column.autoIncrement) {
+        logger.info(`🔢 设置列 ${column.name} 为AUTO_INCREMENT`);
+        let modifyColumnDefinition = `\`${column.name}\` ${this.getDataType(
+          column
+        )} AUTO_INCREMENT`;
+
+        if (!column.allowNull) modifyColumnDefinition += " NOT NULL";
+        if (column.unique && !column.primaryKey)
+          modifyColumnDefinition += " UNIQUE";
+        if (column.comment)
+          modifyColumnDefinition += ` COMMENT '${column.comment}'`;
+
+        const modifyAutoIncSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${modifyColumnDefinition}`;
+        logger.info(`执行SQL: ${modifyAutoIncSQL}`);
+
+        if (this.currentSchema) {
+          await this.executeAndRecordSql(
+            connection,
+            tableName,
+            this.currentSchema.database_type,
+            this.currentSchema.partition_type,
+            this.currentSchema.schema_version,
+            "ALTER",
+            modifyAutoIncSQL
+          );
+        } else {
+          await connection.query(modifyAutoIncSQL);
+        }
+      }
+
       logger.info(`为表 ${tableName} 添加列 ${column.name} 成功`);
     } catch (error) {
       logger.error(`为表 ${tableName} 添加列 ${column.name} 失败:`, error);
@@ -1419,6 +1580,30 @@ export class DatabaseMigrationService {
         logger.warn(`列 ${column.name} 已存在，跳过添加`);
         return;
       }
+
+      // 检查是否是多主键错误
+      if (
+        error instanceof Error &&
+        error.message.toLowerCase().includes("multiple primary key")
+      ) {
+        logger.error(`❌ 多主键错误: ${error.message}`);
+        logger.info(`💡 建议: 请检查表结构定义，确保只有一个主键列`);
+      }
+
+      // 检查是否是AUTO_INCREMENT相关错误
+      if (
+        error instanceof Error &&
+        (error.message
+          .toLowerCase()
+          .includes("there can be only one auto column") ||
+          error.message.toLowerCase().includes("must be defined as a key"))
+      ) {
+        logger.error(`❌ AUTO_INCREMENT错误: ${error.message}`);
+        logger.info(
+          `💡 建议: AUTO_INCREMENT列必须是主键或唯一键，且一个表只能有一个AUTO_INCREMENT列`
+        );
+      }
+
       throw error;
     }
   }
