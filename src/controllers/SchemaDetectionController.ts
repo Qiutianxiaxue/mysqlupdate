@@ -64,31 +64,26 @@ export class SchemaDetectionController {
   };
 
   /**
-   * 检测所有表的结构变化
+   * 检测所有数据库类型的表结构变化
    * POST /api/schema-detection/all
-   * {
-   *   "databaseType": "main",
-   *   "tableNames": ["users", "orders"] // 可选，如果不提供则检测所有表
-   * }
+   *
+   * 自动检测基准数据库中的所有表
    */
   detectAllTables = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { databaseType = "main", tableNames } = req.body;
+      logger.info(`开始检测所有数据库类型的表结构变化`);
 
-      logger.info(`开始检测所有表的结构变化 (${databaseType})`);
-
-      const results = await this.detectionService.detectAllTablesChanges(
-        databaseType,
-        tableNames
-      );
+      const results = await this.detectionService.detectAllTablesChanges();
 
       res.json({
         success: true,
-        message: `检测完成，共发现 ${results.length} 个表有结构变化`,
-        data: results,
+        message: `检测完成，共发现 ${results.changes.length} 个表有结构变化`,
+        data: results.changes,
+        new_tables: results.newTables,
+        deleted_tables: results.deletedTables,
         summary: {
-          total_tables_with_changes: results.length,
-          tables_changed: results.map((r) => r.table_name),
+          ...results.summary,
+          tables_changed: results.changes.map((r) => r.table_name),
         },
       });
     } catch (error) {
@@ -102,61 +97,51 @@ export class SchemaDetectionController {
   };
 
   /**
-   * 检测并保存表结构变化
+   * 检测并保存所有数据库类型的表结构变化
    * POST /api/schema-detection/detect-and-save
-   * {
-   *   "databaseType": "main",
-   *   "tableNames": ["users", "orders"], // 可选
-   *   "autoSave": true
-   * }
+   *
+   * 自动检测所有表并保存变化
    */
   detectAndSave = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { databaseType = "main", tableNames, autoSave = false } = req.body;
-
-      logger.info(`开始检测并保存表结构变化 (${databaseType})`);
+      logger.info(`开始检测并保存所有数据库类型的表结构变化`);
 
       // 检测变化
-      const changes = await this.detectionService.detectAllTablesChanges(
-        databaseType,
-        tableNames
-      );
+      const result = await this.detectionService.detectAllTablesChanges();
 
-      if (changes.length === 0) {
+      if (result.changes.length === 0) {
         res.json({
           success: true,
           message: "没有检测到表结构变化",
           data: [],
+          new_tables: result.newTables,
+          deleted_tables: result.deletedTables,
           summary: {
-            total_tables_with_changes: 0,
+            ...result.summary,
             saved: false,
           },
         });
         return;
       }
 
-      let saved = false;
-      if (autoSave) {
-        // 自动保存变化
-        await this.detectionService.saveDetectedChanges(changes);
-        saved = true;
-        logger.info(`已自动保存 ${changes.length} 个表的结构变化`);
-      }
+      // 自动保存变化
+      await this.detectionService.saveDetectedChanges(result.changes);
+      logger.info(`已保存 ${result.changes.length} 个表的结构变化`);
 
       res.json({
         success: true,
-        message: `检测完成，发现 ${changes.length} 个表有结构变化${
-          saved ? "，已自动保存" : ""
-        }`,
-        data: changes,
+        message: `检测完成，发现 ${result.changes.length} 个表有结构变化，已保存`,
+        data: result.changes,
+        new_tables: result.newTables,
+        deleted_tables: result.deletedTables,
         summary: {
-          total_tables_with_changes: changes.length,
-          tables_changed: changes.map((c) => ({
+          ...result.summary,
+          tables_changed: result.changes.map((c) => ({
             table_name: c.table_name,
             version: `${c.current_version} -> ${c.new_version}`,
             changes_count: c.changes_detected.length,
           })),
-          saved,
+          saved: true,
         },
       });
     } catch (error) {

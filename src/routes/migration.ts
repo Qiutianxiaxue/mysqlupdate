@@ -31,7 +31,7 @@ router.post(
 // 根据表定义信息获取表结构定义
 router.post(
   "/schemas/detail",
-  migrationController.getTableSchemaById.bind(migrationController)
+  migrationController.getTableSchemaByCondition.bind(migrationController)
 );
 
 // 删除表结构定义
@@ -40,15 +40,17 @@ router.post(
   migrationController.deleteTableSchema.bind(migrationController)
 );
 
-// 迁移执行
+// 迁移执行 - 统一接口，支持多种参数组合
 router.post(
   "/execute",
   migrationController.executeMigration.bind(migrationController)
-); // 新统一接口
+);
+
+// 一键迁移所有表
 router.post(
-  "/execute/schema",
-  migrationController.executeMigrationBySchemaId.bind(migrationController)
-); // 兼容旧版本
+  "/execute-all",
+  migrationController.migrateAllTables.bind(migrationController)
+);
 
 // 企业管理
 router.post(

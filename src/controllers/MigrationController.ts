@@ -242,7 +242,7 @@ export class MigrationController {
   /**
    * 根据表定义信息获取表结构定义
    */
-  async getTableSchemaById(req: Request, res: Response): Promise<void> {
+  async getTableSchemaByCondition(req: Request, res: Response): Promise<void> {
     try {
       const { table_name, database_type, partition_type, schema_version } =
         req.body;
@@ -359,11 +359,13 @@ export class MigrationController {
   }
 
   /**
-   * 执行表迁移（自动使用最新版本）
+   * 执行表迁移
+   * 支持指定版本和分区类型，兼容多种使用场景
    */
   async executeMigration(req: Request, res: Response): Promise<void> {
     try {
-      const { table_name, database_type, partition_type } = req.body;
+      const { table_name, database_type, partition_type, schema_version } =
+        req.body;
 
       if (!table_name || !database_type) {
         res.status(400).json({
@@ -406,28 +408,49 @@ export class MigrationController {
         whereCondition.partition_type = partition_type;
       }
 
-      // 查找表结构定义
-      const allSchemas = await TableSchema.findAll({
-        where: whereCondition,
-        order: [
-          ["partition_type", "ASC"],
-          ["schema_version", "DESC"],
-        ], // 按分区类型和版本排序
-      });
-
-      if (allSchemas.length === 0) {
-        const partitionMsg = partition_type
-          ? `, partition_type: ${partition_type}`
-          : "";
-        res.status(404).json({
-          success: false,
-          message: `未找到表结构定义: ${table_name} (database_type: ${database_type}${partitionMsg})`,
-        });
-        return;
+      // 如果指定了版本号，添加到查询条件
+      if (schema_version) {
+        whereCondition.schema_version = schema_version;
       }
 
-      // 如果没有指定分区类型，但存在多个分区类型，需要用户明确指定
-      if (!partition_type) {
+      // 查找表结构定义
+      let schema: any = null;
+
+      if (partition_type) {
+        // 如果指定了分区类型，直接查找特定schema
+        schema = await TableSchema.findOne({
+          where: whereCondition,
+          order: [["schema_version", "DESC"]], // 如果没有指定版本，则使用最新版本
+        });
+
+        if (!schema) {
+          res.status(404).json({
+            success: false,
+            message: `表结构定义不存在: ${table_name} (${database_type}, ${partition_type})${
+              schema_version ? ` 版本 ${schema_version}` : ""
+            }`,
+          });
+          return;
+        }
+      } else {
+        // 如果没有指定分区类型，查找所有匹配的schema
+        const allSchemas = await TableSchema.findAll({
+          where: whereCondition,
+          order: [
+            ["partition_type", "ASC"],
+            ["schema_version", "DESC"],
+          ], // 按分区类型和版本排序
+        });
+
+        if (allSchemas.length === 0) {
+          res.status(404).json({
+            success: false,
+            message: `未找到表结构定义: ${table_name} (database_type: ${database_type})`,
+          });
+          return;
+        }
+
+        // 如果存在多个分区类型，需要用户明确指定
         const uniquePartitionTypes = [
           ...new Set(allSchemas.map((s) => s.partition_type)),
         ];
@@ -441,11 +464,12 @@ export class MigrationController {
           });
           return;
         }
+
+        // 使用找到的第一个（最新版本的）schema
+        schema = allSchemas[0];
       }
 
-      // 获取最新版本的表结构定义
-      const latestSchema = allSchemas[0];
-      if (!latestSchema) {
+      if (!schema) {
         res.status(500).json({
           success: false,
           message: `数据异常：未能获取表结构定义`,
@@ -454,26 +478,26 @@ export class MigrationController {
       }
 
       logger.info(
-        `开始执行表 ${table_name} (${database_type}) 的迁移，使用版本 ${latestSchema.schema_version}`
+        `开始执行表 ${table_name} (${database_type}) 的迁移，使用版本 ${schema.schema_version}`
       );
 
-      // 使用最新版本执行迁移
+      // 执行迁移
       await this.migrationService.migrateTable(
-        table_name,
-        database_type,
-        latestSchema.schema_version,
-        latestSchema.partition_type
+        schema.table_name,
+        schema.database_type,
+        schema.schema_version,
+        schema.partition_type
       );
 
       res.json({
         success: true,
-        message: `表 ${table_name} (${database_type}) 迁移执行完成，使用版本 ${latestSchema.schema_version}`,
+        message: `表 ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 版本 ${schema.schema_version} 迁移执行完成`,
         data: {
-          table_name: latestSchema.table_name,
-          database_type: latestSchema.database_type,
-          partition_type: latestSchema.partition_type,
-          schema_version: latestSchema.schema_version,
-          upgrade_notes: latestSchema.upgrade_notes,
+          table_name: schema.table_name,
+          database_type: schema.database_type,
+          partition_type: schema.partition_type,
+          schema_version: schema.schema_version,
+          upgrade_notes: schema.upgrade_notes,
         },
       });
     } catch (error) {
@@ -487,65 +511,149 @@ export class MigrationController {
   }
 
   /**
-   * 通过表定义信息执行迁移
+   * 一键迁移所有已确认的表（基于TableSchema表中的配置）
    */
-  async executeMigrationBySchemaId(req: Request, res: Response): Promise<void> {
+  async migrateAllTables(req: Request, res: Response): Promise<void> {
     try {
-      const { table_name, database_type, partition_type, schema_version } =
-        req.body;
+      logger.info("开始一键迁移所有已确认的表");
 
-      if (!table_name || !database_type || !partition_type) {
-        res.status(400).json({
-          success: false,
-          message: "缺少必需字段: table_name, database_type, partition_type",
-        });
-        return;
-      }
-
-      // 基于table_name、partition_type和database_type查找表结构定义
-      const whereCondition: any = {
-        table_name,
-        database_type,
-        partition_type,
-        is_active: true,
-      };
-
-      // 如果指定了版本号，则查找特定版本
-      if (schema_version) {
-        whereCondition.schema_version = schema_version;
-      }
-
-      const schema = await TableSchema.findOne({
-        where: whereCondition,
-        order: [["schema_version", "DESC"]], // 如果没有指定版本，则使用最新版本
+      // 1. 获取TableSchema表中所有激活的表结构定义
+      const allSchemas = await TableSchema.findAll({
+        where: {
+          is_active: true,
+        },
+        order: [
+          ["database_type", "ASC"],
+          ["table_name", "ASC"],
+          ["schema_version", "DESC"],
+        ],
       });
 
-      if (!schema) {
-        res.status(404).json({
-          success: false,
-          message: `表结构定义不存在: ${table_name} (${database_type}, ${partition_type})${
-            schema_version ? ` 版本 ${schema_version}` : ""
-          }`,
+      if (allSchemas.length === 0) {
+        res.json({
+          success: true,
+          message: "没有找到需要迁移的表结构定义",
+          data: {
+            total_schemas: 0,
+            tables_migrated: 0,
+            migration_results: [],
+          },
         });
         return;
       }
 
-      await this.migrationService.migrateTable(
-        schema.table_name,
-        schema.database_type,
-        schema.schema_version,
-        schema.partition_type
-      );
+      logger.info(`找到 ${allSchemas.length} 个表结构定义需要迁移`);
+
+      // 2. 对每个表结构定义执行迁移
+      const migrationResults: Array<{
+        table_name: string;
+        database_type: string;
+        partition_type: string;
+        schema_version: string;
+        success: boolean;
+        message: string;
+        error?: string;
+        upgrade_notes?: string;
+      }> = [];
+
+      let successCount = 0;
+      let failureCount = 0;
+
+      for (const schema of allSchemas) {
+        try {
+          logger.info(
+            `迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
+          );
+
+          // 执行迁移
+          await this.migrationService.migrateTable(
+            schema.table_name,
+            schema.database_type,
+            schema.schema_version,
+            schema.partition_type
+          );
+
+          migrationResults.push({
+            table_name: schema.table_name,
+            database_type: schema.database_type,
+            partition_type: schema.partition_type,
+            schema_version: schema.schema_version,
+            success: true,
+            message: `迁移成功到版本 ${schema.schema_version}`,
+            ...(schema.upgrade_notes && {
+              upgrade_notes: schema.upgrade_notes,
+            }),
+          });
+
+          successCount++;
+          logger.info(`✅ 表 ${schema.table_name} 迁移成功`);
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "未知错误";
+
+          migrationResults.push({
+            table_name: schema.table_name,
+            database_type: schema.database_type,
+            partition_type: schema.partition_type,
+            schema_version: schema.schema_version,
+            success: false,
+            message: `迁移失败`,
+            error: errorMessage,
+            ...(schema.upgrade_notes && {
+              upgrade_notes: schema.upgrade_notes,
+            }),
+          });
+
+          failureCount++;
+          logger.error(`❌ 表 ${schema.table_name} 迁移失败:`, error);
+        }
+      }
+
+      const totalTables = allSchemas.length;
+      const message = `一键迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
+
+      // 3. 按数据库类型统计结果
+      const byDatabaseType: {
+        [key: string]: { total: number; success: number; failure: number };
+      } = {};
+      migrationResults.forEach((result) => {
+        const dbType = result.database_type;
+        if (!byDatabaseType[dbType]) {
+          byDatabaseType[dbType] = {
+            total: 0,
+            success: 0,
+            failure: 0,
+          };
+        }
+        byDatabaseType[dbType].total++;
+        if (result.success) {
+          byDatabaseType[dbType].success++;
+        } else {
+          byDatabaseType[dbType].failure++;
+        }
+      });
 
       res.json({
-        success: true,
-        message: `表 ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 版本 ${schema.schema_version} 迁移执行完成`,
+        success: failureCount === 0, // 只有全部成功才返回true
+        message,
+        data: {
+          total_schemas: totalTables,
+          tables_migrated: successCount,
+          migration_results: migrationResults,
+        },
+        summary: {
+          migration_success: successCount,
+          migration_failure: failureCount,
+          by_database_type: byDatabaseType,
+        },
       });
+
+      logger.info(message);
     } catch (error) {
-      logger.error("执行迁移失败:", error);
+      logger.error("一键迁移失败:", error);
       res.status(500).json({
         success: false,
-        message: "执行迁移失败",
+        message: "一键迁移失败",
         error: error instanceof Error ? error.message : "未知错误",
       });
     }

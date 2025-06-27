@@ -112,7 +112,7 @@ TableSchema.init(
       comment: "检测到的变化列表，JSON格式存储",
     },
     upgrade_notes: {
-      type: DataTypes.STRING(255),
+      type: DataTypes.TEXT,
       allowNull: true,
       comment: "版本升级说明，描述本次升级的变更内容",
     },

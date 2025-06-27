@@ -114,37 +114,324 @@ export class SchemaDetectionService {
   }
 
   /**
-   * 检测所有表的结构变化
+   * 检测所有数据库类型的表结构变化
    */
-  async detectAllTablesChanges(
-    databaseType: "main" | "log" | "order" | "static" = "main",
-    tableNames?: string[]
-  ): Promise<TableSchemaChange[]> {
+  async detectAllTablesChanges(): Promise<{
+    changes: TableSchemaChange[];
+    newTables: string[];
+    deletedTables: string[];
+    summary: {
+      total_checked: number;
+      changes_detected: number;
+      new_tables: number;
+      deleted_tables: number;
+      by_database_type: {
+        [key: string]: {
+          checked: number;
+          changes: number;
+          new_tables: number;
+          deleted_tables: number;
+        };
+      };
+    };
+  }> {
     try {
-      logger.info(`🔍 开始检测所有表的结构变化 (${databaseType})`);
+      logger.info(`🔍 开始检测所有数据库类型的表结构变化`);
 
-      // 获取要检测的表列表
-      const tablesToCheck = tableNames || (await this.getAllTableNames());
-      const results: TableSchemaChange[] = [];
+      // 获取基准数据库中的所有表
+      const baseDbTables = await this.getAllTableNames();
 
-      for (const tableName of tablesToCheck) {
-        try {
-          const change = await this.detectTableChanges(tableName, databaseType);
-          if (change) {
-            results.push(change);
+      // 所有数据库类型
+      const databaseTypes: ("main" | "log" | "order" | "static")[] = [
+        "main",
+        "log",
+        "order",
+        "static",
+      ];
+
+      // 获取所有类型的TableSchema定义
+      const allSchemaDefinitions = await TableSchema.findAll({
+        where: {
+          is_active: true,
+        },
+        attributes: [
+          "table_name",
+          "schema_version",
+          "database_type",
+          "partition_type",
+          "time_interval",
+          "time_format",
+        ],
+      });
+
+      const allResults: TableSchemaChange[] = [];
+      const allNewTables: string[] = [];
+      const allDeletedTables: string[] = [];
+      const byDatabaseType: {
+        [key: string]: {
+          checked: number;
+          changes: number;
+          new_tables: number;
+          deleted_tables: number;
+        };
+      } = {};
+
+      // 按数据库类型检测
+      for (const databaseType of databaseTypes) {
+        logger.info(`检测 ${databaseType} 数据库类型...`);
+
+        const typeSchemaDefinitions = allSchemaDefinitions.filter(
+          (s) => s.database_type === databaseType
+        );
+
+        // 分析表的状态，考虑分区配置
+        const { newTables, deletedTables, existingTables } =
+          this.analyzeTablesWithPartition(baseDbTables, typeSchemaDefinitions);
+
+        logger.info(
+          `${databaseType} - 新表: ${newTables.length}, 删除: ${deletedTables.length}, 检查: ${existingTables.length}`
+        );
+
+        const typeResults: TableSchemaChange[] = [];
+
+        // 1. 检测现有表的结构变化
+        for (const tableName of existingTables) {
+          try {
+            const change = await this.detectTableChanges(
+              tableName,
+              databaseType
+            );
+            if (change) {
+              typeResults.push(change);
+            }
+          } catch (error) {
+            logger.error(
+              `检测表 ${tableName} (${databaseType}) 时出错:`,
+              error
+            );
+            // 继续处理其他表
           }
-        } catch (error) {
-          logger.error(`检测表 ${tableName} 时出错:`, error);
-          // 继续处理其他表
         }
+
+        // 2. 为新表生成schema定义（只对main类型创建新表定义）
+        if (databaseType === "main") {
+          for (const tableName of newTables) {
+            try {
+              const newTableChange = await this.generateNewTableSchema(
+                tableName,
+                databaseType
+              );
+              if (newTableChange) {
+                typeResults.push(newTableChange);
+              }
+            } catch (error) {
+              logger.error(`为新表 ${tableName} 生成schema时出错:`, error);
+            }
+          }
+        }
+
+        // 3. 记录已删除的表
+        if (deletedTables.length > 0) {
+          logger.warn(
+            `${databaseType} 类型检测到 ${
+              deletedTables.length
+            } 个表已删除: ${deletedTables.join(", ")}`
+          );
+        }
+
+        // 汇总本类型的结果
+        allResults.push(...typeResults);
+        if (databaseType === "main") {
+          allNewTables.push(...newTables);
+        }
+        allDeletedTables.push(...deletedTables);
+
+        byDatabaseType[databaseType] = {
+          checked: baseDbTables.length + deletedTables.length,
+          changes: typeResults.length,
+          new_tables: databaseType === "main" ? newTables.length : 0,
+          deleted_tables: deletedTables.length,
+        };
       }
 
-      logger.info(`检测完成，共发现 ${results.length} 个表有结构变化`);
-      return results;
+      const summary = {
+        total_checked: Object.values(byDatabaseType).reduce(
+          (sum, type) => sum + type.checked,
+          0
+        ),
+        changes_detected: allResults.length,
+        new_tables: allNewTables.length,
+        deleted_tables: allDeletedTables.length,
+        by_database_type: byDatabaseType,
+      };
+
+      logger.info(
+        `全部检测完成 - 总计检查: ${summary.total_checked}, 变化: ${summary.changes_detected}, 新表: ${summary.new_tables}, 删除: ${summary.deleted_tables}`
+      );
+
+      return {
+        changes: allResults,
+        newTables: allNewTables,
+        deletedTables: allDeletedTables,
+        summary,
+      };
     } catch (error) {
       logger.error("检测所有表结构变化失败:", error);
       throw error;
     }
+  }
+
+  /**
+   * 为新表生成schema定义
+   */
+  private async generateNewTableSchema(
+    tableName: string,
+    databaseType: "main" | "log" | "order" | "static"
+  ): Promise<TableSchemaChange | null> {
+    try {
+      logger.info(`为新表 ${tableName} 生成schema定义`);
+
+      // 获取表结构信息
+      const tableInfo = await this.getCurrentTableInfo(tableName);
+      if (!tableInfo) {
+        logger.warn(`无法获取表 ${tableName} 的结构信息`);
+        return null;
+      }
+
+      // 生成schema定义
+      const schemaDefinition = this.generateSchemaDefinition(tableInfo);
+
+      const result: TableSchemaChange = {
+        table_name: tableName,
+        database_type: databaseType,
+        partition_type: "none", // 新表默认不分区
+        current_version: null, // 新表没有当前版本
+        new_version: "1.0.0", // 新表从1.0.0开始
+        schema_definition: JSON.stringify(schemaDefinition),
+        changes_detected: ["新表创建"],
+        upgrade_notes: `从基准数据库检测到的新表: ${tableName}`,
+      };
+
+      logger.info(`成功为新表 ${tableName} 生成schema定义`);
+      return result;
+    } catch (error) {
+      logger.error(`为新表 ${tableName} 生成schema定义失败:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 分析表状态，考虑分区配置
+   */
+  private analyzeTablesWithPartition(
+    baseDbTables: string[],
+    schemaDefinitions: any[]
+  ): {
+    newTables: string[];
+    deletedTables: string[];
+    existingTables: string[];
+  } {
+    const definedTables = schemaDefinitions.map((s) => s.table_name);
+    const newTables: string[] = [];
+    const deletedTables: string[] = [];
+    const existingTables: string[] = [];
+
+    // 创建分区表匹配规则
+    const partitionRules = new Map<string, any>();
+    schemaDefinitions.forEach((schema) => {
+      partitionRules.set(schema.table_name, {
+        partition_type: schema.partition_type,
+        time_interval: schema.time_interval,
+        time_format: schema.time_format,
+      });
+    });
+
+    // 检查基准数据库中的每个表
+    for (const baseTable of baseDbTables) {
+      let matched = false;
+
+      // 1. 直接匹配（无分区表或精确匹配的分区表）
+      if (definedTables.includes(baseTable)) {
+        existingTables.push(baseTable);
+        matched = true;
+        continue;
+      }
+
+      // 2. 检查是否是分区表
+      for (const [definedTable, partitionConfig] of partitionRules) {
+        if (this.isPartitionTable(baseTable, definedTable, partitionConfig)) {
+          existingTables.push(baseTable);
+          matched = true;
+          break;
+        }
+      }
+
+      // 3. 如果没有匹配，则为新表
+      if (!matched) {
+        newTables.push(baseTable);
+      }
+    }
+
+    // 检查已删除的表（在schema中定义但基准库中不存在）
+    for (const definedTable of definedTables) {
+      const partitionConfig = partitionRules.get(definedTable);
+      let foundInBase = false;
+
+      // 1. 直接匹配
+      if (baseDbTables.includes(definedTable)) {
+        foundInBase = true;
+      } else {
+        // 2. 检查是否有对应的分区表
+        for (const baseTable of baseDbTables) {
+          if (this.isPartitionTable(baseTable, definedTable, partitionConfig)) {
+            foundInBase = true;
+            break;
+          }
+        }
+      }
+
+      if (!foundInBase) {
+        deletedTables.push(definedTable);
+      }
+    }
+
+    return { newTables, deletedTables, existingTables };
+  }
+
+  /**
+   * 检查表是否为指定基表的分区表
+   */
+  private isPartitionTable(
+    actualTableName: string,
+    baseTableName: string,
+    partitionConfig: any
+  ): boolean {
+    if (!partitionConfig || partitionConfig.partition_type === "none") {
+      return false;
+    }
+
+    // 按门店分区：表名格式为 base_table_name_store_{store_id}
+    if (partitionConfig.partition_type === "store") {
+      const storePattern = new RegExp(`^${baseTableName}_store_\\d+$`);
+      return storePattern.test(actualTableName);
+    }
+
+    // 按时间分区：根据time_format判断
+    if (
+      partitionConfig.partition_type === "time" &&
+      partitionConfig.time_format
+    ) {
+      // 将时间格式转换为正则表达式
+      let timePattern = partitionConfig.time_format
+        .replace(/YYYY/g, "\\d{4}")
+        .replace(/MM/g, "\\d{2}")
+        .replace(/DD/g, "\\d{2}");
+
+      const fullPattern = new RegExp(`^${baseTableName}${timePattern}$`);
+      return fullPattern.test(actualTableName);
+    }
+
+    return false;
   }
 
   /**
