@@ -653,7 +653,7 @@ export class SchemaDetectionService {
         column.defaultValue = col.column_default;
       }
 
-      // 只在为true时设置这些布尔属性
+      // 处理主键：所有主键列都设置primaryKey为true
       if (col.column_key === "PRI") {
         column.primaryKey = true;
       }
@@ -677,7 +677,7 @@ export class SchemaDetectionService {
     // 处理索引
     const indexMap = new Map<string, any>();
     tableInfo.indexes.forEach((idx: IndexInfo) => {
-      if (idx.index_name === "PRIMARY") return; // 跳过主键索引
+      if (idx.index_name === "PRIMARY") return; // 跳过主键索引，因为主键信息已经在列定义中
 
       if (!indexMap.has(idx.index_name)) {
         indexMap.set(idx.index_name, {
