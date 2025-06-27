@@ -672,7 +672,8 @@ export class DatabaseMigrationService {
             definition += this.getDefaultValue(col);
           }
 
-          if (col.comment) definition += ` COMMENT '${col.comment}'`;
+          if (col.comment)
+            definition += ` COMMENT '${this.escapeComment(col.comment)}'`;
 
           return definition;
         })
@@ -1069,9 +1070,12 @@ export class DatabaseMigrationService {
       let needsUpdate = false;
       const updateReasons: string[] = [];
 
-      // 检查comment（标准化比较）
+      // 检查comment（标准化比较，处理转义字符）
       const expectedComment = (definedColumn.comment || "").trim();
-      if (currentComment !== expectedComment) {
+      const normalizedCurrentComment = this.normalizeComment(currentComment);
+      const normalizedExpectedComment = this.normalizeComment(expectedComment);
+
+      if (normalizedCurrentComment !== normalizedExpectedComment) {
         needsUpdate = true;
         updateReasons.push(
           `comment: "${currentComment}" → "${expectedComment}"`
@@ -1190,7 +1194,9 @@ export class DatabaseMigrationService {
           }
 
           if (definedColumn.comment) {
-            columnDefinition += ` COMMENT '${definedColumn.comment}'`;
+            columnDefinition += ` COMMENT '${this.escapeComment(
+              definedColumn.comment
+            )}'`;
           }
 
           let alterSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${columnDefinition}`;
@@ -1418,6 +1424,29 @@ export class DatabaseMigrationService {
     }
 
     return values;
+  }
+
+  /**
+   * 标准化comment，用于比较（处理转义字符差异）
+   */
+  private normalizeComment(comment: string): string {
+    if (!comment) return "";
+
+    // 统一处理反斜杠：将双反斜杠转换为单反斜杠进行比较
+    // MySQL存储时会转义，JSON配置中也是转义的，需要统一标准
+    return comment.replace(/\\\\/g, "\\").trim();
+  }
+
+  /**
+   * 转义comment中的特殊字符，用于SQL生成
+   */
+  private escapeComment(comment: string): string {
+    if (!comment) return "";
+
+    // 转义单引号和反斜杠，用于SQL语句
+    return comment
+      .replace(/\\/g, "\\\\") // 反斜杠转义：\ -> \\
+      .replace(/'/g, "\\'"); // 单引号转义：' -> \'
   }
 
   /**
@@ -1778,7 +1807,8 @@ export class DatabaseMigrationService {
         columnDefinition += this.getDefaultValue(column);
       }
 
-      if (column.comment) columnDefinition += ` COMMENT '${column.comment}'`;
+      if (column.comment)
+        columnDefinition += ` COMMENT '${this.escapeComment(column.comment)}'`;
 
       // 先添加列（不设置主键和AUTO_INCREMENT）
       let alterSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN ${columnDefinition}`;
@@ -1830,7 +1860,9 @@ export class DatabaseMigrationService {
         if (column.unique && !column.primaryKey)
           modifyColumnDefinition += " UNIQUE";
         if (column.comment)
-          modifyColumnDefinition += ` COMMENT '${column.comment}'`;
+          modifyColumnDefinition += ` COMMENT '${this.escapeComment(
+            column.comment
+          )}'`;
 
         const modifyAutoIncSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${modifyColumnDefinition}`;
         logger.info(`执行SQL: ${modifyAutoIncSQL}`);
