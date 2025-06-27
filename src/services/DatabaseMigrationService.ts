@@ -666,9 +666,12 @@ export class DatabaseMigrationService {
           if (col.autoIncrement) definition += " AUTO_INCREMENT";
           if (!col.allowNull) definition += " NOT NULL";
           if (col.unique) definition += " UNIQUE";
+
+          // 处理默认值
           if (col.defaultValue !== undefined) {
             definition += this.getDefaultValue(col);
           }
+
           if (col.comment) definition += ` COMMENT '${col.comment}'`;
 
           return definition;
@@ -1077,6 +1080,18 @@ export class DatabaseMigrationService {
 
       // 检查nullable
       const expectedNullable = definedColumn.allowNull !== false;
+      logger.info(`  - allowNull属性检查:`);
+      logger.info(
+        `    - definedColumn.allowNull: ${JSON.stringify(
+          definedColumn.allowNull
+        )} (${typeof definedColumn.allowNull})`
+      );
+      logger.info(`    - expectedNullable: ${expectedNullable}`);
+      logger.info(`    - currentNullable: ${currentNullable}`);
+      logger.info(
+        `    - 是否需要更新: ${currentNullable !== expectedNullable}`
+      );
+
       if (currentNullable !== expectedNullable) {
         needsUpdate = true;
         updateReasons.push(
@@ -1086,8 +1101,10 @@ export class DatabaseMigrationService {
 
       // 检查默认值（智能比较）
       const expectedDefault = definedColumn.defaultValue;
+
+      // 只有当明确设置了defaultValue时才进行比较
       if (expectedDefault !== undefined) {
-        // 标准化默认值进行比较
+        // 标准化当前默认值和期望默认值
         const normalizedCurrent = this.normalizeDefaultValue(currentDefault);
         const normalizedExpected = this.normalizeDefaultValue(expectedDefault);
 
@@ -1176,6 +1193,7 @@ export class DatabaseMigrationService {
             columnDefinition += " UNIQUE";
           }
 
+          // 处理默认值
           if (definedColumn.defaultValue !== undefined) {
             columnDefinition += this.getDefaultValue(definedColumn);
           }
@@ -1763,9 +1781,12 @@ export class DatabaseMigrationService {
 
       if (!column.allowNull) columnDefinition += " NOT NULL";
       if (column.unique && !column.primaryKey) columnDefinition += " UNIQUE"; // 主键自动包含唯一性
+
+      // 处理默认值
       if (column.defaultValue !== undefined) {
         columnDefinition += this.getDefaultValue(column);
       }
+
       if (column.comment) columnDefinition += ` COMMENT '${column.comment}'`;
 
       // 先添加列（不设置主键和AUTO_INCREMENT）
@@ -1979,6 +2000,11 @@ export class DatabaseMigrationService {
   private getDefaultValue(column: ColumnDefinition): string {
     if (column.defaultValue === undefined) {
       return "";
+    }
+
+    // 处理NULL默认值
+    if (column.defaultValue === null) {
+      return " DEFAULT NULL";
     }
 
     const columnType = column.type.toUpperCase();

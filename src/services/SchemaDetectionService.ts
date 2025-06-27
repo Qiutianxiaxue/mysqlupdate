@@ -885,15 +885,17 @@ export class SchemaDetectionService {
         }
       }
 
-      // 只在不允许为空时设置allowNull为false，默认允许为空
-      if (col.is_nullable === "NO") {
-        column.allowNull = false;
-      }
+      // 明确设置allowNull属性，避免默认值歧义
+      column.allowNull = col.is_nullable === "YES";
 
-      // 只在有默认值时设置
+      // 处理默认值：需要区分NULL和没有默认值的情况
       if (col.column_default !== null) {
         column.defaultValue = col.column_default;
+      } else if (column.allowNull) {
+        // 如果字段允许为空且默认值是NULL，明确设置为null
+        column.defaultValue = null;
       }
+      // 如果字段不允许为空且没有默认值，则不设置defaultValue
 
       // 使用智能识别的主键，而不是数据库中错误的复合主键设计
       if (col.column_name === correctPrimaryKey) {
