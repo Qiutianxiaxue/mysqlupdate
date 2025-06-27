@@ -13,6 +13,8 @@ export interface TableSchemaAttributes {
   schema_version: string; // 表结构版本
   schema_definition: string; // JSON格式的表结构定义
   is_active: boolean; // 是否激活
+  current_version?: string; // 当前版本（用于记录升级前的版本）
+  changes_detected?: string; // 检测到的变化列表（JSON格式）
   upgrade_notes?: string; // 升级说明
   created_at: Date;
   updated_at: Date;
@@ -36,6 +38,8 @@ class TableSchema extends Model<
   public schema_version!: string;
   public schema_definition!: string;
   public is_active!: boolean;
+  public current_version?: string;
+  public changes_detected?: string;
   public upgrade_notes?: string;
   public readonly created_at!: Date;
   public readonly updated_at!: Date;
@@ -96,6 +100,16 @@ TableSchema.init(
       allowNull: false,
       defaultValue: true,
       comment: "是否为激活状态：true-当前使用版本，false-历史版本",
+    },
+    current_version: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      comment: "升级前的版本号，用于记录版本变化历史",
+    },
+    changes_detected: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: "检测到的变化列表，JSON格式存储",
     },
     upgrade_notes: {
       type: DataTypes.STRING(255),

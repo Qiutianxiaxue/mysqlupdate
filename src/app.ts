@@ -4,7 +4,9 @@ import helmet from "helmet";
 import morgan from "morgan";
 import dotenv from "dotenv";
 import migrationRoutes from "@/routes/migration";
+import schemaDetectionRoutes from "@/routes/schemaDetection";
 import { syncDatabase } from "@/models";
+import { testBaseConnection, getBaseDatabaseInfo } from "@/config/baseDatabase";
 import logger from "@/utils/logger";
 
 dotenv.config();
@@ -21,6 +23,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // 路由
 app.use("/api/migration", migrationRoutes);
+app.use("/api/schema-detection", schemaDetectionRoutes);
 
 // 健康检查
 app.get("/health", (req, res) => {
@@ -39,6 +42,7 @@ app.get("/", (req, res) => {
     endpoints: {
       health: "/health",
       migration: "/api/migration",
+      schemaDetection: "/api/schema-detection",
     },
   });
 });
@@ -70,8 +74,15 @@ app.use("*", (req, res) => {
 
 export const startServer = async () => {
   try {
-    // 同步数据库
+    // 同步主数据库
     await syncDatabase();
+
+    // 测试基准数据库连接
+    await testBaseConnection();
+    const baseDbInfo = getBaseDatabaseInfo();
+    logger.info(
+      `基准数据库配置: ${baseDbInfo.host}:${baseDbInfo.port}/${baseDbInfo.database}`
+    );
 
     app.listen(PORT, () => {
       logger.info(`服务器启动成功，端口: ${PORT}`);
