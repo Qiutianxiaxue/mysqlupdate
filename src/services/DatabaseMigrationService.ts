@@ -1050,13 +1050,19 @@ export class DatabaseMigrationService {
         );
       }
 
-      // 检查默认值（简单比较）
+      // 检查默认值（智能比较）
       const expectedDefault = definedColumn.defaultValue;
-      if (expectedDefault !== undefined && currentDefault !== expectedDefault) {
-        needsUpdate = true;
-        updateReasons.push(
-          `default: "${currentDefault}" → "${expectedDefault}"`
-        );
+      if (expectedDefault !== undefined) {
+        // 标准化默认值进行比较
+        const normalizedCurrent = this.normalizeDefaultValue(currentDefault);
+        const normalizedExpected = this.normalizeDefaultValue(expectedDefault);
+
+        if (normalizedCurrent !== normalizedExpected) {
+          needsUpdate = true;
+          updateReasons.push(
+            `default: "${currentDefault}" (${typeof currentDefault}) → "${expectedDefault}" (${typeof expectedDefault})`
+          );
+        }
       }
 
       // 检查数据类型（简化的类型检查）
@@ -1239,6 +1245,70 @@ export class DatabaseMigrationService {
       .replace(/\([^)]*\)/g, "") // 移除括号中的长度/精度信息
       .replace(/\s+/g, " ") // 标准化空格
       .trim();
+  }
+
+  /**
+   * 标准化默认值，用于比较
+   */
+  private normalizeDefaultValue(value: any): string {
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    // 如果是字符串，去除引号并转换
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+
+      // 特殊处理MySQL TIMESTAMP函数
+      if (trimmed.toUpperCase().includes("CURRENT_TIMESTAMP")) {
+        // 标准化CURRENT_TIMESTAMP相关的表达式
+        let normalized = trimmed.toUpperCase();
+
+        // 处理各种可能的格式，移除多余空格
+        normalized = normalized
+          .replace(/\s+/g, " ") // 标准化空格
+          .replace(/\bCURRENT_TIMESTAMP\(\)/g, "CURRENT_TIMESTAMP") // 移除空括号
+          .trim();
+
+        // 对于包含 ON UPDATE 的表达式，只保留默认值部分进行比较
+        // 因为MySQL的COLUMN_DEFAULT字段只存储默认值，ON UPDATE存储在EXTRA字段中
+        if (normalized.includes("ON UPDATE")) {
+          // 提取 ON UPDATE 之前的部分作为默认值
+          const parts = normalized.split("ON UPDATE");
+          if (parts.length > 0 && parts[0]) {
+            const defaultPart = parts[0].trim();
+            return defaultPart || "CURRENT_TIMESTAMP";
+          }
+        }
+
+        // 如果只是 CURRENT_TIMESTAMP，直接返回
+        if (normalized === "CURRENT_TIMESTAMP") {
+          return "CURRENT_TIMESTAMP";
+        }
+
+        return normalized;
+      }
+
+      // 尝试转换为数字
+      const numValue = Number(trimmed);
+      if (!isNaN(numValue) && isFinite(numValue)) {
+        return numValue.toString();
+      }
+
+      return trimmed;
+    }
+
+    // 如果是数字，转换为字符串
+    if (typeof value === "number") {
+      return value.toString();
+    }
+
+    // 如果是布尔值，转换为数字字符串
+    if (typeof value === "boolean") {
+      return value ? "1" : "0";
+    }
+
+    return String(value);
   }
 
   /**
