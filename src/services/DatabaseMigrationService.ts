@@ -1,8 +1,10 @@
 import { Sequelize } from "sequelize";
 import TableSchema from "@/models/TableSchema";
 import Enterprise from "@/models/Enterprise";
+import MigrationHistory from "@/models/MigrationHistory";
 import DatabaseConnectionManager from "./DatabaseConnectionManager";
 import logger from "@/utils/logger";
+import { v4 as uuidv4 } from "uuid";
 
 interface ColumnDefinition {
   name: string;
@@ -28,9 +30,89 @@ interface TableDefinition {
 
 export class DatabaseMigrationService {
   private connectionManager: DatabaseConnectionManager;
+  private currentMigrationBatch: string = "";
+  private currentSchema: TableSchema | null = null;
 
   constructor() {
     this.connectionManager = new DatabaseConnectionManager();
+  }
+
+  /**
+   * 记录SQL执行历史
+   */
+  private async recordSqlExecution(
+    tableName: string,
+    databaseType: string,
+    partitionType: string,
+    schemaVersion: string,
+    migrationType: "CREATE" | "ALTER" | "DROP" | "INDEX",
+    sqlStatement: string,
+    executionStatus: "SUCCESS" | "FAILED",
+    executionTime: number,
+    errorMessage?: string
+  ): Promise<void> {
+    try {
+      const migrationData: any = {
+        table_name: tableName,
+        database_type: databaseType as "main" | "log" | "order" | "static",
+        partition_type: partitionType as "store" | "time" | "none",
+        schema_version: schemaVersion,
+        migration_type: migrationType,
+        sql_statement: sqlStatement,
+        execution_status: executionStatus,
+        execution_time: executionTime,
+        migration_batch: this.currentMigrationBatch,
+      };
+
+      if (errorMessage) {
+        migrationData.error_message = errorMessage;
+      }
+
+      await MigrationHistory.create(migrationData);
+    } catch (error) {
+      logger.error("记录SQL执行历史失败:", error);
+      // 不抛出错误，避免影响主要迁移流程
+    }
+  }
+
+  /**
+   * 执行SQL并记录历史
+   */
+  private async executeAndRecordSql(
+    connection: Sequelize,
+    tableName: string,
+    databaseType: string,
+    partitionType: string,
+    schemaVersion: string,
+    migrationType: "CREATE" | "ALTER" | "DROP" | "INDEX",
+    sqlStatement: string
+  ): Promise<void> {
+    const startTime = Date.now();
+    let executionStatus: "SUCCESS" | "FAILED" = "SUCCESS";
+    let errorMessage: string | undefined;
+
+    try {
+      await connection.query(sqlStatement);
+      logger.info(`SQL执行成功: ${sqlStatement.substring(0, 100)}...`);
+    } catch (error) {
+      executionStatus = "FAILED";
+      errorMessage = error instanceof Error ? error.message : "未知错误";
+      logger.error(`SQL执行失败: ${sqlStatement.substring(0, 100)}...`, error);
+      throw error; // 重新抛出错误，保持原有错误处理逻辑
+    } finally {
+      const executionTime = Date.now() - startTime;
+      await this.recordSqlExecution(
+        tableName,
+        databaseType,
+        partitionType,
+        schemaVersion,
+        migrationType,
+        sqlStatement,
+        executionStatus,
+        executionTime,
+        errorMessage
+      );
+    }
   }
 
   /**
@@ -44,10 +126,18 @@ export class DatabaseMigrationService {
     partitionType?: string
   ): Promise<void> {
     try {
+      // 生成迁移批次ID
+      this.currentMigrationBatch = `${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(
+        0,
+        8
+      )}`;
+
       logger.info(
         `🚀 开始迁移表: ${tableName}, 数据库类型: ${databaseType}, 分区类型: ${
           partitionType || "自动检测"
-        }, 版本: ${schemaVersion || "最新"}`
+        }, 版本: ${schemaVersion || "最新"}, 批次: ${
+          this.currentMigrationBatch
+        }`
       );
 
       // 获取表结构定义
@@ -208,6 +298,9 @@ export class DatabaseMigrationService {
     schema: TableSchema
   ): Promise<void> {
     try {
+      // 设置当前处理的schema，用于SQL记录
+      this.currentSchema = schema;
+
       const tableDefinition = JSON.parse(
         schema.schema_definition
       ) as TableDefinition;
@@ -247,6 +340,9 @@ export class DatabaseMigrationService {
         error
       );
       throw error;
+    } finally {
+      // 清理当前schema
+      this.currentSchema = null;
     }
   }
 
@@ -532,7 +628,10 @@ export class DatabaseMigrationService {
   private async createTableWithConnection(
     connection: Sequelize,
     tableName: string,
-    tableDefinition: TableDefinition
+    tableDefinition: TableDefinition,
+    databaseType?: string,
+    partitionType?: string,
+    schemaVersion?: string
   ): Promise<void> {
     try {
       const columnDefinitions = tableDefinition.columns
@@ -565,7 +664,33 @@ export class DatabaseMigrationService {
 
       createTableSQL += ")";
 
-      await connection.query(createTableSQL);
+      // 如果有数据库类型等信息，记录SQL执行历史
+      if (databaseType && partitionType && schemaVersion) {
+        await this.executeAndRecordSql(
+          connection,
+          tableName,
+          databaseType,
+          partitionType,
+          schemaVersion,
+          "CREATE",
+          createTableSQL
+        );
+      } else if (this.currentSchema) {
+        // 使用当前schema信息记录SQL
+        await this.executeAndRecordSql(
+          connection,
+          tableName,
+          this.currentSchema.database_type,
+          this.currentSchema.partition_type,
+          this.currentSchema.schema_version,
+          "CREATE",
+          createTableSQL
+        );
+      } else {
+        // 向后兼容，直接执行SQL
+        await connection.query(createTableSQL);
+      }
+
       logger.info(`创建表 ${tableName} 成功`);
     } catch (error) {
       logger.error(`创建表 ${tableName} 失败:`, error);
@@ -1009,7 +1134,22 @@ export class DatabaseMigrationService {
           let alterSQL = `ALTER TABLE ${tableName} MODIFY COLUMN ${columnDefinition}`;
 
           logger.info(`执行SQL: ${alterSQL}`);
-          await connection.query(alterSQL);
+
+          // 记录SQL执行历史
+          if (this.currentSchema) {
+            await this.executeAndRecordSql(
+              connection,
+              tableName,
+              this.currentSchema.database_type,
+              this.currentSchema.partition_type,
+              this.currentSchema.schema_version,
+              "ALTER",
+              alterSQL
+            );
+          } else {
+            await connection.query(alterSQL);
+          }
+
           logger.info(`✅ 成功更新列 ${columnName} 的属性`);
         } catch (error) {
           logger.error(`❌ 更新列 ${columnName} 属性失败:`, error);
@@ -1041,14 +1181,44 @@ export class DatabaseMigrationService {
         logger.info(`🔄 移除表 ${tableName} 列 ${columnName} 的主键约束`);
         const dropPrimaryKeySQL = `ALTER TABLE ${tableName} DROP PRIMARY KEY`;
         logger.info(`执行SQL: ${dropPrimaryKeySQL}`);
-        await connection.query(dropPrimaryKeySQL);
+
+        // 记录SQL执行历史
+        if (this.currentSchema) {
+          await this.executeAndRecordSql(
+            connection,
+            tableName,
+            this.currentSchema.database_type,
+            this.currentSchema.partition_type,
+            this.currentSchema.schema_version,
+            "ALTER",
+            dropPrimaryKeySQL
+          );
+        } else {
+          await connection.query(dropPrimaryKeySQL);
+        }
+
         logger.info(`✅ 成功移除主键约束`);
       } else if (!currentIsPrimaryKey && expectedIsPrimaryKey) {
         // 添加主键
         logger.info(`🔄 为表 ${tableName} 列 ${columnName} 添加主键约束`);
         const addPrimaryKeySQL = `ALTER TABLE ${tableName} ADD PRIMARY KEY (${columnName})`;
         logger.info(`执行SQL: ${addPrimaryKeySQL}`);
-        await connection.query(addPrimaryKeySQL);
+
+        // 记录SQL执行历史
+        if (this.currentSchema) {
+          await this.executeAndRecordSql(
+            connection,
+            tableName,
+            this.currentSchema.database_type,
+            this.currentSchema.partition_type,
+            this.currentSchema.schema_version,
+            "ALTER",
+            addPrimaryKeySQL
+          );
+        } else {
+          await connection.query(addPrimaryKeySQL);
+        }
+
         logger.info(`✅ 成功添加主键约束`);
       }
     } catch (error) {
@@ -1114,7 +1284,22 @@ export class DatabaseMigrationService {
             logger.info(`🗑️ 删除不再需要的索引: ${existingIndexName}`);
             const dropSQL = `DROP INDEX ${existingIndexName} ON ${tableName}`;
             logger.info(`执行SQL: ${dropSQL}`);
-            await connection.query(dropSQL);
+
+            // 记录SQL执行历史
+            if (this.currentSchema) {
+              await this.executeAndRecordSql(
+                connection,
+                tableName,
+                this.currentSchema.database_type,
+                this.currentSchema.partition_type,
+                this.currentSchema.schema_version,
+                "DROP",
+                dropSQL
+              );
+            } else {
+              await connection.query(dropSQL);
+            }
+
             logger.info(`✅ 成功删除索引: ${existingIndexName}`);
           } catch (error) {
             logger.error(`❌ 删除索引 ${existingIndexName} 失败:`, error);
@@ -1140,7 +1325,22 @@ export class DatabaseMigrationService {
               index.name
             } ON ${tableName} (${index.fields.join(", ")})`;
             logger.info(`执行SQL: ${sql}`);
-            await connection.query(sql);
+
+            // 记录SQL执行历史
+            if (this.currentSchema) {
+              await this.executeAndRecordSql(
+                connection,
+                tableName,
+                this.currentSchema.database_type,
+                this.currentSchema.partition_type,
+                this.currentSchema.schema_version,
+                "INDEX",
+                sql
+              );
+            } else {
+              await connection.query(sql);
+            }
+
             logger.info(`✅ 成功创建索引: ${index.name}`);
           } catch (indexError) {
             logger.warn(`⚠️ 创建索引 ${index.name} 失败:`, indexError);
@@ -1192,7 +1392,22 @@ export class DatabaseMigrationService {
       let alterSQL = `ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}`;
 
       logger.info(`执行SQL: ${alterSQL}`);
-      await connection.query(alterSQL);
+
+      // 记录SQL执行历史
+      if (this.currentSchema) {
+        await this.executeAndRecordSql(
+          connection,
+          tableName,
+          this.currentSchema.database_type,
+          this.currentSchema.partition_type,
+          this.currentSchema.schema_version,
+          "ALTER",
+          alterSQL
+        );
+      } else {
+        await connection.query(alterSQL);
+      }
+
       logger.info(`为表 ${tableName} 添加列 ${column.name} 成功`);
     } catch (error) {
       logger.error(`为表 ${tableName} 添加列 ${column.name} 失败:`, error);

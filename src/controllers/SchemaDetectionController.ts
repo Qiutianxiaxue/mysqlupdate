@@ -248,8 +248,8 @@ export class SchemaDetectionController {
             ? table.TABLE_COLLATION.split("_")[0]
             : null,
           comment: table.TABLE_COMMENT,
-          created_at: table.CREATE_TIME,
-          updated_at: table.UPDATE_TIME,
+          create_time: table.CREATE_TIME,
+          update_time: table.UPDATE_TIME,
           table_rows: table.TABLE_ROWS,
           data_length: table.DATA_LENGTH,
           index_length: table.INDEX_LENGTH,

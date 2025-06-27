@@ -1,11 +1,13 @@
 import sequelize from "@/config/database";
 import TableSchema from "./TableSchema";
 import Enterprise from "./Enterprise";
+import MigrationHistory from "./MigrationHistory";
 
 // 初始化所有模型
 const models = {
   TableSchema,
   Enterprise,
+  MigrationHistory,
 };
 
 // 同步数据库

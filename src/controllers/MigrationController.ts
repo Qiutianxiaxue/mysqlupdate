@@ -221,7 +221,7 @@ export class MigrationController {
     try {
       const schemas = await TableSchema.findAll({
         where: { is_active: true },
-        order: [["created_at", "DESC"]],
+        order: [["create_time", "DESC"]],
       });
 
       res.json({

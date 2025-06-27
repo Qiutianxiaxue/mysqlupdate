@@ -3,7 +3,7 @@ import sequelize from "@/config/database";
 
 // 表结构设计接口
 export interface TableSchemaAttributes {
-  id: number;
+  table_schema_id: number;
   table_name: string;
   database_type: "main" | "log" | "order" | "static"; // 数据库类型
   partition_type: "store" | "time" | "none"; // 分表类型
@@ -16,19 +16,22 @@ export interface TableSchemaAttributes {
   current_version?: string; // 当前版本（用于记录升级前的版本）
   changes_detected?: string; // 检测到的变化列表（JSON格式）
   upgrade_notes?: string; // 升级说明
-  created_at: Date;
-  updated_at: Date;
+  create_time: Date;
+  update_time: Date;
 }
 
 // 创建时的可选字段
 export interface TableSchemaCreationAttributes
-  extends Optional<TableSchemaAttributes, "id" | "created_at" | "updated_at"> {}
+  extends Optional<
+    TableSchemaAttributes,
+    "table_schema_id" | "create_time" | "update_time"
+  > {}
 
 class TableSchema extends Model<
   TableSchemaAttributes,
   TableSchemaCreationAttributes
 > {
-  public id!: number;
+  public table_schema_id!: number;
   public table_name!: string;
   public database_type!: "main" | "log" | "order" | "static";
   public partition_type!: "store" | "time" | "none";
@@ -41,13 +44,13 @@ class TableSchema extends Model<
   public current_version?: string;
   public changes_detected?: string;
   public upgrade_notes?: string;
-  public readonly created_at!: Date;
-  public readonly updated_at!: Date;
+  public readonly create_time!: Date;
+  public readonly update_time!: Date;
 }
 
 TableSchema.init(
   {
-    id: {
+    table_schema_id: {
       type: DataTypes.INTEGER,
       autoIncrement: true,
       primaryKey: true,
@@ -116,13 +119,13 @@ TableSchema.init(
       allowNull: true,
       comment: "版本升级说明，描述本次升级的变更内容",
     },
-    created_at: {
+    create_time: {
       type: DataTypes.DATE,
       allowNull: false,
       defaultValue: DataTypes.NOW,
       comment: "记录创建时间",
     },
-    updated_at: {
+    update_time: {
       type: DataTypes.DATE,
       allowNull: false,
       defaultValue: DataTypes.NOW,
@@ -133,6 +136,7 @@ TableSchema.init(
     sequelize,
     tableName: "qc_table_schemas",
     modelName: "TableSchema",
+    timestamps: false, // 使用自定义的时间字段
   }
 );
 
