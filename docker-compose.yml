@@ -1,0 +1,121 @@
+version: "3.8"
+
+services:
+  # MySQL数据库服务
+  mysql:
+    image: mysql:8.0
+    container_name: mysqlupdate-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-mysql_update}
+      MYSQL_USER: ${MYSQL_USER:-mysql_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mysql_password}
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - mysqlupdate-network
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-p${MYSQL_ROOT_PASSWORD:-123456}",
+        ]
+      timeout: 20s
+      retries: 10
+
+  # 基准数据库服务（用于表结构检测）
+  mysql-base:
+    image: mysql:8.0
+    container_name: mysqlupdate-mysql-base
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${BASE_MYSQL_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${BASE_MYSQL_DATABASE:-base_schema_database}
+      MYSQL_USER: ${BASE_MYSQL_USER:-base_user}
+      MYSQL_PASSWORD: ${BASE_MYSQL_PASSWORD:-base_password}
+      TZ: Asia/Shanghai
+    ports:
+      - "${BASE_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - mysql_base_data:/var/lib/mysql
+    networks:
+      - mysqlupdate-network
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-p${BASE_MYSQL_ROOT_PASSWORD:-123456}",
+        ]
+      timeout: 20s
+      retries: 10
+
+  # Node.js应用服务
+  app:
+    build: .
+    container_name: mysqlupdate-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      # 应用配置
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+
+      # 主数据库配置
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-mysql_update}
+      DB_USER: ${MYSQL_USER:-mysql_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-mysql_password}
+
+      # 基准数据库配置
+      BASE_DB_HOST: mysql-base
+      BASE_DB_PORT: 3306
+      BASE_DB_NAME: ${BASE_MYSQL_DATABASE:-base_schema_database}
+      BASE_DB_USER: ${BASE_MYSQL_USER:-base_user}
+      BASE_DB_PASSWORD: ${BASE_MYSQL_PASSWORD:-base_password}
+
+      # 其他配置
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-base:
+        condition: service_healthy
+    networks:
+      - mysqlupdate-network
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  mysql_data:
+    driver: local
+  mysql_base_data:
+    driver: local
+
+networks:
+  mysqlupdate-network:
+    driver: bridge
