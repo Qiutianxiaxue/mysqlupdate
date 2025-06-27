@@ -971,7 +971,22 @@ export class DatabaseMigrationService {
           logger.info(`🗑️ 删除不再需要的列: ${columnName}`);
           const dropSQL = `ALTER TABLE \`${tableName}\` DROP COLUMN \`${columnName}\``;
           logger.info(`执行SQL: ${dropSQL}`);
-          await connection.query(dropSQL);
+
+          // 记录SQL执行历史
+          if (this.currentSchema) {
+            await this.executeAndRecordSql(
+              connection,
+              tableName,
+              this.currentSchema.database_type,
+              this.currentSchema.partition_type,
+              this.currentSchema.schema_version,
+              "ALTER",
+              dropSQL
+            );
+          } else {
+            await connection.query(dropSQL);
+          }
+
           logger.info(`✅ 成功删除列: ${columnName}`);
         } catch (error) {
           logger.error(`❌ 删除列 ${columnName} 失败:`, error);
