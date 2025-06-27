@@ -92,7 +92,7 @@ graph TB
 
 ```bash
 # 1. 克隆项目
-git clone <repository-url>
+git clone https://github.com/Qiutianxiaxue/mysqlupdate.git
 cd mysqlupdate
 
 # 2. 一键启动
