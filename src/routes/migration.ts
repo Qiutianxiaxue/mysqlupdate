@@ -72,4 +72,18 @@ router.post(
   migrationController.closeAllConnections.bind(migrationController)
 );
 
+// 迁移锁管理
+router.post(
+  "/locks/list",
+  migrationController.getActiveMigrationLocks.bind(migrationController)
+);
+router.post(
+  "/locks/force-release",
+  migrationController.forceReleaseMigrationLock.bind(migrationController)
+);
+router.post(
+  "/locks/cleanup",
+  migrationController.cleanupExpiredMigrationLocks.bind(migrationController)
+);
+
 export default router;

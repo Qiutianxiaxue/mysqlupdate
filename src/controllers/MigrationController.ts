@@ -1,14 +1,17 @@
 import { Request, Response } from "express";
 import DatabaseMigrationService from "@/services/DatabaseMigrationService";
+import { MigrationLockService } from "@/services/MigrationLockService";
 import TableSchema from "@/models/TableSchema";
 import Enterprise from "@/models/Enterprise";
 import logger from "@/utils/logger";
 
 export class MigrationController {
   private migrationService: DatabaseMigrationService;
+  private lockService: MigrationLockService;
 
   constructor() {
     this.migrationService = new DatabaseMigrationService();
+    this.lockService = MigrationLockService.getInstance();
   }
 
   /**
@@ -359,7 +362,7 @@ export class MigrationController {
   }
 
   /**
-   * 执行表迁移
+   * 执行单表迁移
    * 支持指定版本和分区类型，兼容多种使用场景
    */
   async executeMigration(req: Request, res: Response): Promise<void> {
@@ -478,13 +481,47 @@ export class MigrationController {
         `开始执行表 ${table_name} (${database_type}) 的迁移，使用版本 ${schema.schema_version}`
       );
 
-      // 执行迁移
-      await this.migrationService.migrateTable(
+      // 获取迁移锁
+      const lockResult = await this.lockService.acquireLock(
+        "SINGLE_TABLE",
         schema.table_name,
         schema.database_type,
-        schema.schema_version,
-        schema.partition_type
+        schema.partition_type,
+        `单表迁移: ${schema.table_name} 到版本 ${schema.schema_version}`
       );
+
+      if (!lockResult.success) {
+        res.status(409).json({
+          success: false,
+          message: `无法获取迁移锁: ${lockResult.message}`,
+          error: "MIGRATION_LOCK_CONFLICT",
+          conflict_info: lockResult.conflictLock
+            ? {
+                table_name: lockResult.conflictLock.table_name,
+                database_type: lockResult.conflictLock.database_type,
+                partition_type: lockResult.conflictLock.partition_type,
+                start_time: lockResult.conflictLock.start_time,
+                lock_holder: lockResult.conflictLock.lock_holder,
+              }
+            : undefined,
+        });
+        return;
+      }
+
+      const lockKey = lockResult.lock!.lock_key;
+
+      try {
+        // 执行迁移
+        await this.migrationService.migrateTable(
+          schema.table_name,
+          schema.database_type,
+          schema.schema_version,
+          schema.partition_type
+        );
+      } finally {
+        // 释放锁
+        await this.lockService.releaseLock(lockKey);
+      }
 
       res.json({
         success: true,
@@ -514,138 +551,173 @@ export class MigrationController {
     try {
       logger.info("开始一键迁移所有已确认的表");
 
-      // 1. 获取TableSchema表中所有激活的表结构定义
-      const allSchemas = await TableSchema.findAll({
-        where: {
-          is_active: true,
-        },
-        order: [
-          ["database_type", "ASC"],
-          ["table_name", "ASC"],
-          ["schema_version", "DESC"],
-        ],
-      });
+      // 获取全量迁移锁
+      const lockResult = await this.lockService.acquireLock(
+        "ALL_TABLES",
+        undefined,
+        undefined,
+        undefined,
+        "一键迁移所有表"
+      );
 
-      if (allSchemas.length === 0) {
-        res.json({
-          success: true,
-          message: "没有找到需要迁移的表结构定义",
-          data: {
-            total_schemas: 0,
-            tables_migrated: 0,
-            migration_results: [],
-          },
+      if (!lockResult.success) {
+        res.status(409).json({
+          success: false,
+          message: `无法获取全量迁移锁: ${lockResult.message}`,
+          error: "MIGRATION_LOCK_CONFLICT",
+          conflict_info: lockResult.conflictLock
+            ? {
+                table_name: lockResult.conflictLock.table_name,
+                database_type: lockResult.conflictLock.database_type,
+                partition_type: lockResult.conflictLock.partition_type,
+                lock_type: lockResult.conflictLock.lock_type,
+                start_time: lockResult.conflictLock.start_time,
+                lock_holder: lockResult.conflictLock.lock_holder,
+              }
+            : undefined,
         });
         return;
       }
 
-      logger.info(`找到 ${allSchemas.length} 个表结构定义需要迁移`);
+      const lockKey = lockResult.lock!.lock_key;
 
-      // 2. 对每个表结构定义执行迁移
-      const migrationResults: Array<{
-        table_name: string;
-        database_type: string;
-        partition_type: string;
-        schema_version: string;
-        success: boolean;
-        message: string;
-        error?: string;
-        upgrade_notes?: string;
-      }> = [];
+      try {
+        // 1. 获取TableSchema表中所有激活的表结构定义
+        const allSchemas = await TableSchema.findAll({
+          where: {
+            is_active: true,
+          },
+          order: [
+            ["database_type", "ASC"],
+            ["table_name", "ASC"],
+            ["schema_version", "DESC"],
+          ],
+        });
 
-      let successCount = 0;
-      let failureCount = 0;
-
-      for (const schema of allSchemas) {
-        try {
-          logger.info(
-            `迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
-          );
-
-          // 执行迁移
-          await this.migrationService.migrateTable(
-            schema.table_name,
-            schema.database_type,
-            schema.schema_version,
-            schema.partition_type
-          );
-
-          migrationResults.push({
-            table_name: schema.table_name,
-            database_type: schema.database_type,
-            partition_type: schema.partition_type,
-            schema_version: schema.schema_version,
+        if (allSchemas.length === 0) {
+          res.json({
             success: true,
-            message: `迁移成功到版本 ${schema.schema_version}`,
-            ...(schema.upgrade_notes && {
-              upgrade_notes: schema.upgrade_notes,
-            }),
+            message: "没有找到需要迁移的表结构定义",
+            data: {
+              total_schemas: 0,
+              tables_migrated: 0,
+              migration_results: [],
+            },
           });
-
-          successCount++;
-          logger.info(`✅ 表 ${schema.table_name} 迁移成功`);
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : "未知错误";
-
-          migrationResults.push({
-            table_name: schema.table_name,
-            database_type: schema.database_type,
-            partition_type: schema.partition_type,
-            schema_version: schema.schema_version,
-            success: false,
-            message: `迁移失败`,
-            error: errorMessage,
-            ...(schema.upgrade_notes && {
-              upgrade_notes: schema.upgrade_notes,
-            }),
-          });
-
-          failureCount++;
-          logger.error(`❌ 表 ${schema.table_name} 迁移失败:`, error);
+          return;
         }
+
+        logger.info(`找到 ${allSchemas.length} 个表结构定义需要迁移`);
+
+        // 2. 对每个表结构定义执行迁移
+        const migrationResults: Array<{
+          table_name: string;
+          database_type: string;
+          partition_type: string;
+          schema_version: string;
+          success: boolean;
+          message: string;
+          error?: string;
+          upgrade_notes?: string;
+        }> = [];
+
+        let successCount = 0;
+        let failureCount = 0;
+
+        for (const schema of allSchemas) {
+          try {
+            logger.info(
+              `迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
+            );
+
+            // 执行迁移
+            await this.migrationService.migrateTable(
+              schema.table_name,
+              schema.database_type,
+              schema.schema_version,
+              schema.partition_type
+            );
+
+            migrationResults.push({
+              table_name: schema.table_name,
+              database_type: schema.database_type,
+              partition_type: schema.partition_type,
+              schema_version: schema.schema_version,
+              success: true,
+              message: `迁移成功到版本 ${schema.schema_version}`,
+              ...(schema.upgrade_notes && {
+                upgrade_notes: schema.upgrade_notes,
+              }),
+            });
+
+            successCount++;
+            logger.info(`✅ 表 ${schema.table_name} 迁移成功`);
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error ? error.message : "未知错误";
+
+            migrationResults.push({
+              table_name: schema.table_name,
+              database_type: schema.database_type,
+              partition_type: schema.partition_type,
+              schema_version: schema.schema_version,
+              success: false,
+              message: `迁移失败`,
+              error: errorMessage,
+              ...(schema.upgrade_notes && {
+                upgrade_notes: schema.upgrade_notes,
+              }),
+            });
+
+            failureCount++;
+            logger.error(`❌ 表 ${schema.table_name} 迁移失败:`, error);
+          }
+        }
+
+        const totalTables = allSchemas.length;
+        const message = `一键迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
+
+        // 3. 按数据库类型统计结果
+        const byDatabaseType: {
+          [key: string]: { total: number; success: number; failure: number };
+        } = {};
+        migrationResults.forEach((result) => {
+          const dbType = result.database_type;
+          if (!byDatabaseType[dbType]) {
+            byDatabaseType[dbType] = {
+              total: 0,
+              success: 0,
+              failure: 0,
+            };
+          }
+          byDatabaseType[dbType].total++;
+          if (result.success) {
+            byDatabaseType[dbType].success++;
+          } else {
+            byDatabaseType[dbType].failure++;
+          }
+        });
+
+        res.json({
+          success: failureCount === 0, // 只有全部成功才返回true
+          message,
+          data: {
+            total_schemas: totalTables,
+            tables_migrated: successCount,
+            migration_results: migrationResults,
+          },
+          summary: {
+            migration_success: successCount,
+            migration_failure: failureCount,
+            by_database_type: byDatabaseType,
+          },
+        });
+
+        logger.info(message);
+      } finally {
+        // 释放锁
+        await this.lockService.releaseLock(lockKey);
       }
-
-      const totalTables = allSchemas.length;
-      const message = `一键迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
-
-      // 3. 按数据库类型统计结果
-      const byDatabaseType: {
-        [key: string]: { total: number; success: number; failure: number };
-      } = {};
-      migrationResults.forEach((result) => {
-        const dbType = result.database_type;
-        if (!byDatabaseType[dbType]) {
-          byDatabaseType[dbType] = {
-            total: 0,
-            success: 0,
-            failure: 0,
-          };
-        }
-        byDatabaseType[dbType].total++;
-        if (result.success) {
-          byDatabaseType[dbType].success++;
-        } else {
-          byDatabaseType[dbType].failure++;
-        }
-      });
-
-      res.json({
-        success: failureCount === 0, // 只有全部成功才返回true
-        message,
-        data: {
-          total_schemas: totalTables,
-          tables_migrated: successCount,
-          migration_results: migrationResults,
-        },
-        summary: {
-          migration_success: successCount,
-          migration_failure: failureCount,
-          by_database_type: byDatabaseType,
-        },
-      });
-
-      logger.info(message);
     } catch (error) {
       logger.error("一键迁移失败:", error);
       res.status(500).json({
@@ -860,6 +932,95 @@ export class MigrationController {
       res.status(500).json({
         success: false,
         message: "创建企业失败",
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  }
+
+  /**
+   * 获取活跃的迁移锁
+   */
+  async getActiveMigrationLocks(req: Request, res: Response): Promise<void> {
+    try {
+      const activeLocks = await this.lockService.getActiveLocks();
+
+      res.json({
+        success: true,
+        data: activeLocks,
+        count: activeLocks.length,
+        message: "获取活跃迁移锁成功",
+      });
+    } catch (error) {
+      logger.error("获取活跃迁移锁失败:", error);
+      res.status(500).json({
+        success: false,
+        message: "获取活跃迁移锁失败",
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  }
+
+  /**
+   * 强制释放迁移锁
+   */
+  async forceReleaseMigrationLock(req: Request, res: Response): Promise<void> {
+    try {
+      const { lock_key } = req.body;
+
+      if (!lock_key) {
+        res.status(400).json({
+          success: false,
+          message: "缺少必需字段: lock_key",
+        });
+        return;
+      }
+
+      const result = await this.lockService.forceReleaseLock(lock_key);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: result.message,
+        });
+      } else {
+        res.status(404).json({
+          success: false,
+          message: result.message,
+        });
+      }
+    } catch (error) {
+      logger.error("强制释放迁移锁失败:", error);
+      res.status(500).json({
+        success: false,
+        message: "强制释放迁移锁失败",
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  }
+
+  /**
+   * 清理过期的迁移锁
+   */
+  async cleanupExpiredMigrationLocks(
+    req: Request,
+    res: Response
+  ): Promise<void> {
+    try {
+      const { hours_old } = req.body;
+      const hoursOld = hours_old || 24; // 默认24小时
+
+      const result = await this.lockService.cleanupExpiredLocks(hoursOld);
+
+      res.json({
+        success: result.success,
+        message: result.message,
+        cleaned_count: result.cleanedCount,
+      });
+    } catch (error) {
+      logger.error("清理过期迁移锁失败:", error);
+      res.status(500).json({
+        success: false,
+        message: "清理过期迁移锁失败",
         error: error instanceof Error ? error.message : "未知错误",
       });
     }
