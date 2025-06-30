@@ -2593,6 +2593,121 @@ export class DatabaseMigrationService {
   getConnectionStats(): { total: number; connections: string[] } {
     return this.connectionManager.getConnectionStats();
   }
+
+  /**
+   * 迁移指定门店的单个表
+   */
+  async migrateStoreTable(
+    tableName: string,
+    databaseType: string,
+    schemaVersion: string,
+    storeId: string,
+    enterpriseId: number
+  ): Promise<void> {
+    try {
+      // 生成迁移批次ID
+      this.currentMigrationBatch = `${tableName}_${databaseType}_store_${storeId}_${Date.now()}_${uuidv4().substring(
+        0,
+        8
+      )}`;
+
+      logger.info(
+        `🚀 开始迁移门店分表: ${tableName}, 门店ID: ${storeId}, 企业ID: ${enterpriseId}, 数据库类型: ${databaseType}, 版本: ${schemaVersion}, 批次: ${this.currentMigrationBatch}`
+      );
+
+      // 获取门店分表的表结构定义
+      const schema = await this.getTableSchema(
+        tableName,
+        databaseType,
+        "store", // 固定为store分区类型
+        schemaVersion
+      );
+
+      if (!schema) {
+        throw new Error(
+          `未找到门店分表结构定义: ${tableName} (database_type: ${databaseType}, partition_type: store, version: ${schemaVersion})`
+        );
+      }
+
+      // 获取指定企业
+      const targetEnterprise = await Enterprise.findOne({
+        where: {
+          enterprise_id: enterpriseId,
+          status: 1,
+        },
+      });
+
+      if (!targetEnterprise) {
+        throw new Error(`未找到企业ID为 ${enterpriseId} 的有效企业`);
+      }
+
+      logger.info(
+        `🎯 企业门店迁移: ${targetEnterprise.enterprise_name} (ID: ${enterpriseId}), 门店: ${storeId}`
+      );
+
+      // 执行迁移
+      await this.migrateStoreTableForEnterprise(
+        targetEnterprise,
+        schema,
+        storeId
+      );
+
+      logger.info(
+        `🏁 企业 ${targetEnterprise.enterprise_name} 门店 ${storeId} 的表 ${tableName} 迁移完成`
+      );
+    } catch (error) {
+      logger.error(
+        `迁移门店分表 ${tableName} (门店: ${storeId}, 企业: ${enterpriseId}) 失败:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * 为指定企业迁移指定门店的表
+   */
+  private async migrateStoreTableForEnterprise(
+    enterprise: Enterprise,
+    schema: TableSchema,
+    storeId: string
+  ): Promise<void> {
+    try {
+      // 设置当前schema
+      this.currentSchema = schema;
+
+      // 解析表结构定义
+      const tableDefinition: TableDefinition = JSON.parse(
+        schema.schema_definition
+      );
+
+      // 获取数据库连接
+      const connection = await this.connectionManager.getConnection(
+        enterprise,
+        schema.database_type
+      );
+
+      // 直接为指定门店创建分表，不查询门店列表
+      await this.migrateTableWithConnection(
+        connection,
+        tableDefinition,
+        storeId
+      );
+
+      logger.info(
+        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 的门店 ${storeId} 表 ${schema.table_name} 迁移成功`
+      );
+    } catch (error) {
+      logger.error(
+        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`,
+        error
+      );
+      throw error;
+    } finally {
+      // 清理当前schema
+      this.currentSchema = null;
+    }
+  }
 }
 
 export default DatabaseMigrationService;

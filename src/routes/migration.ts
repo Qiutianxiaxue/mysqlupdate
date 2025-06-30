@@ -51,6 +51,12 @@ router.post(
   "/execute-all",
   migrationController.migrateAllTables.bind(migrationController)
 );
+
+// 根据门店ID迁移所有门店分表
+router.post(
+  "/execute-store",
+  migrationController.migrateStoreTablesById.bind(migrationController)
+);
 // 企业管理
 router.post(
   "/enterprises/list",

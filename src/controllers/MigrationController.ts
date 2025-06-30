@@ -1151,6 +1151,252 @@ export class MigrationController {
       });
     }
   }
+
+  /**
+   * 根据门店ID迁移所有门店分表
+   */
+  async migrateStoreTablesById(req: Request, res: Response): Promise<void> {
+    try {
+      const { store_id, enterprise_id } = req.body;
+
+      // 参数验证
+      if (!store_id) {
+        res.status(400).json({
+          success: false,
+          message: "store_id 参数是必需的",
+        });
+        return;
+      }
+
+      if (!enterprise_id) {
+        res.status(400).json({
+          success: false,
+          message: "enterprise_id 参数是必需的，需要指定门店所属的企业",
+        });
+        return;
+      }
+
+      // 验证enterprise_id
+      const targetEnterprise = await Enterprise.findOne({
+        where: { enterprise_id, status: 1 },
+      });
+
+      if (!targetEnterprise) {
+        res.status(404).json({
+          success: false,
+          message: `企业ID ${enterprise_id} 不存在或状态异常`,
+        });
+        return;
+      }
+
+      const migrationScope = `企业 ${targetEnterprise.enterprise_name}`;
+
+      logger.info(
+        `开始为${migrationScope}的门店 ${store_id} 执行门店分表迁移...`
+      );
+
+      // 获取锁
+      const lockResult = await this.lockService.acquireLock(
+        "SINGLE_TABLE",
+        `store_${store_id}`,
+        "main",
+        "store",
+        `门店${store_id}分表迁移`
+      );
+
+      if (!lockResult.success) {
+        res.status(409).json({
+          success: false,
+          message: `门店分表迁移被锁定，无法执行`,
+          conflict_lock: lockResult.conflictLock
+            ? {
+                lock_key: lockResult.conflictLock.lock_key,
+                table_name: lockResult.conflictLock.table_name,
+                partition_type: lockResult.conflictLock.partition_type,
+                lock_type: lockResult.conflictLock.lock_type,
+                start_time: lockResult.conflictLock.start_time,
+                lock_holder: lockResult.conflictLock.lock_holder,
+              }
+            : undefined,
+        });
+        return;
+      }
+
+      const lockKey = lockResult.lock!.lock_key;
+
+      try {
+        // 1. 获取所有门店分表的表结构定义
+        const storeSchemas = await TableSchema.findAll({
+          where: {
+            is_active: true,
+            partition_type: "store", // 只查询门店分表
+          },
+          order: [
+            ["database_type", "ASC"],
+            ["table_name", "ASC"],
+            ["schema_version", "DESC"],
+          ],
+        });
+
+        if (storeSchemas.length === 0) {
+          res.json({
+            success: true,
+            message: "没有找到门店分表的表结构定义",
+            data: {
+              total_schemas: 0,
+              tables_migrated: 0,
+              migration_results: [],
+              store_id: store_id,
+              enterprise_id: enterprise_id,
+              enterprise_name: targetEnterprise.enterprise_name,
+              migration_scope: migrationScope,
+            },
+          });
+          return;
+        }
+
+        logger.info(
+          `找到 ${storeSchemas.length} 个门店分表结构定义需要为门店 ${store_id} 迁移`
+        );
+
+        // 2. 对每个门店分表结构定义执行迁移
+        const migrationResults: Array<{
+          table_name: string;
+          database_type: string;
+          partition_type: string;
+          schema_version: string;
+          success: boolean;
+          message: string;
+          error?: string;
+          upgrade_notes?: string;
+          actual_table_name?: string; // 实际创建的表名（包含门店后缀）
+        }> = [];
+
+        let successCount = 0;
+        let failureCount = 0;
+
+        for (const schema of storeSchemas) {
+          try {
+            const actualTableName = `${schema.table_name}${store_id}`;
+
+            logger.info(
+              `为企业 ${targetEnterprise.enterprise_name} 的门店 ${store_id} 迁移表: ${schema.table_name} -> ${actualTableName} (${schema.database_type}) 到版本 ${schema.schema_version}`
+            );
+
+            // 执行迁移（传递企业ID参数）
+            await this.migrationService.migrateStoreTable(
+              schema.table_name,
+              schema.database_type,
+              schema.schema_version,
+              store_id,
+              enterprise_id
+            );
+
+            migrationResults.push({
+              table_name: schema.table_name,
+              database_type: schema.database_type,
+              partition_type: schema.partition_type,
+              schema_version: schema.schema_version,
+              success: true,
+              message: `门店分表迁移成功到版本 ${schema.schema_version}`,
+              actual_table_name: actualTableName,
+              ...(schema.upgrade_notes && {
+                upgrade_notes: schema.upgrade_notes,
+              }),
+            });
+
+            successCount++;
+            logger.info(
+              `✅ 企业 ${targetEnterprise.enterprise_name} 门店 ${store_id} 的表 ${actualTableName} 迁移成功`
+            );
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error ? error.message : "未知错误";
+            const actualTableName = `${schema.table_name}${store_id}`;
+
+            migrationResults.push({
+              table_name: schema.table_name,
+              database_type: schema.database_type,
+              partition_type: schema.partition_type,
+              schema_version: schema.schema_version,
+              success: false,
+              message: `门店分表迁移失败`,
+              error: errorMessage,
+              actual_table_name: actualTableName,
+              ...(schema.upgrade_notes && {
+                upgrade_notes: schema.upgrade_notes,
+              }),
+            });
+
+            failureCount++;
+            logger.error(
+              `❌ 企业 ${targetEnterprise.enterprise_name} 门店 ${store_id} 的表 ${actualTableName} 迁移失败:`,
+              error
+            );
+          }
+        }
+
+        const totalTables = storeSchemas.length;
+        const message = `门店 ${store_id} 的${migrationScope}分表迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
+
+        // 3. 按数据库类型统计结果
+        const byDatabaseType: {
+          [key: string]: { total: number; success: number; failure: number };
+        } = {};
+        migrationResults.forEach((result) => {
+          const dbType = result.database_type;
+          if (!byDatabaseType[dbType]) {
+            byDatabaseType[dbType] = {
+              total: 0,
+              success: 0,
+              failure: 0,
+            };
+          }
+          byDatabaseType[dbType].total++;
+          if (result.success) {
+            byDatabaseType[dbType].success++;
+          } else {
+            byDatabaseType[dbType].failure++;
+          }
+        });
+
+        res.json({
+          success: failureCount === 0, // 只有全部成功才返回true
+          message,
+          data: {
+            total_schemas: totalTables,
+            tables_migrated: successCount,
+            migration_results: migrationResults,
+            store_id: store_id,
+            enterprise_id: enterprise_id,
+            enterprise_name: targetEnterprise.enterprise_name,
+            migration_scope: migrationScope,
+          },
+          summary: {
+            migration_success: successCount,
+            migration_failure: failureCount,
+            by_database_type: byDatabaseType,
+          },
+        });
+
+        logger.info(message);
+      } finally {
+        // 释放锁
+        await this.lockService.releaseLock(lockKey);
+      }
+    } catch (error) {
+      const { store_id, enterprise_id } = req.body;
+      logger.error(
+        `门店 ${store_id} (企业ID: ${enterprise_id}) 分表迁移失败:`,
+        error
+      );
+      res.status(500).json({
+        success: false,
+        message: `门店 ${store_id} (企业ID: ${enterprise_id}) 分表迁移失败`,
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  }
 }
 
 export default MigrationController;

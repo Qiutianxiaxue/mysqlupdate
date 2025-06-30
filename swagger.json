@@ -47,6 +47,10 @@
     {
       "name": "连接管理",
       "description": "数据库连接池管理"
+    },
+    {
+      "name": "迁移锁管理",
+      "description": "迁移锁的查看、释放和清理操作"
     }
   ],
   "paths": {
@@ -305,6 +309,16 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "description": "迁移被锁定",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockConflictResponse"
+                }
+              }
+            }
+          },
           "500": {
             "$ref": "#/components/responses/InternalError"
           }
@@ -316,6 +330,23 @@
         "tags": ["迁移执行"],
         "summary": "一键迁移所有表",
         "description": "执行所有活跃表结构定义的迁移",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enterprise_id": {
+                    "type": "integer",
+                    "description": "企业ID，可选，不传则为所有企业执行迁移",
+                    "example": 1
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "迁移完成",
@@ -323,6 +354,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MigrateAllResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "迁移被锁定",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockConflictResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/execute-store": {
+      "post": {
+        "tags": ["迁移执行"],
+        "summary": "根据门店ID迁移所有门店分表",
+        "description": "为指定企业的指定门店创建/迁移所有门店分区的表",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteStoreMigrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "门店分表迁移完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreMigrationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "迁移被锁定",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockConflictResponse"
                 }
               }
             }
@@ -605,6 +697,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BaseResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/locks/list": {
+      "post": {
+        "tags": ["迁移锁管理"],
+        "summary": "获取活跃的迁移锁列表",
+        "description": "获取当前所有活跃的迁移锁信息",
+        "responses": {
+          "200": {
+            "description": "获取成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationLocksResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/locks/force-release": {
+      "post": {
+        "tags": ["迁移锁管理"],
+        "summary": "强制释放迁移锁",
+        "description": "强制释放指定的迁移锁（用于清理僵尸锁）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForceReleaseLockRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "释放成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "description": "锁不存在或已被释放",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/locks/cleanup": {
+      "post": {
+        "tags": ["迁移锁管理"],
+        "summary": "清理过期的迁移锁",
+        "description": "清理指定时间之前的过期迁移锁",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanupLocksRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "清理成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanupLocksResponse"
                 }
               }
             }
@@ -900,6 +1091,75 @@
           }
         }
       },
+      "MigrationLock": {
+        "type": "object",
+        "properties": {
+          "migration_lock_id": {
+            "type": "integer",
+            "description": "迁移锁ID",
+            "example": 1
+          },
+          "lock_key": {
+            "type": "string",
+            "description": "锁键值",
+            "example": "SINGLE_TABLE_users_main_none"
+          },
+          "lock_type": {
+            "type": "string",
+            "enum": ["SINGLE_TABLE", "ALL_TABLES"],
+            "description": "锁类型",
+            "example": "SINGLE_TABLE"
+          },
+          "table_name": {
+            "type": "string",
+            "description": "表名",
+            "example": "users"
+          },
+          "database_type": {
+            "type": "string",
+            "enum": ["main", "log", "order", "static"],
+            "description": "数据库类型",
+            "example": "main"
+          },
+          "partition_type": {
+            "type": "string",
+            "enum": ["store", "time", "none"],
+            "description": "分区类型",
+            "example": "none"
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "锁开始时间",
+            "example": "2024-01-01T10:00:00.000Z"
+          },
+          "lock_holder": {
+            "type": "string",
+            "description": "锁持有者信息",
+            "example": "hostname-1234-abcd1234"
+          },
+          "operation_info": {
+            "type": "string",
+            "description": "操作信息",
+            "example": "用户表迁移"
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "是否活跃",
+            "example": true
+          },
+          "create_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间"
+          },
+          "update_time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间"
+          }
+        }
+      },
       "ExecuteMigrationRequest": {
         "type": "object",
         "required": ["table_name", "database_type", "partition_type"],
@@ -925,6 +1185,11 @@
             "type": "string",
             "description": "版本号（可选，默认使用最新版本）",
             "example": "1.2.0"
+          },
+          "enterprise_id": {
+            "type": "integer",
+            "description": "企业ID（可选，不传则为所有企业执行迁移）",
+            "example": 1
           }
         }
       },
@@ -1099,6 +1364,44 @@
             "type": "string",
             "description": "数据库密码",
             "example": "secure_password"
+          }
+        }
+      },
+      "ExecuteStoreMigrationRequest": {
+        "type": "object",
+        "required": ["store_id", "enterprise_id"],
+        "properties": {
+          "store_id": {
+            "type": "string",
+            "description": "门店ID，用于生成分表名称",
+            "example": "1001"
+          },
+          "enterprise_id": {
+            "type": "integer",
+            "description": "企业ID，指定门店所属的企业",
+            "example": 1
+          }
+        }
+      },
+      "ForceReleaseLockRequest": {
+        "type": "object",
+        "required": ["lock_key"],
+        "properties": {
+          "lock_key": {
+            "type": "string",
+            "description": "要释放的锁键值",
+            "example": "SINGLE_TABLE_users_main_none"
+          }
+        }
+      },
+      "CleanupLocksRequest": {
+        "type": "object",
+        "properties": {
+          "hours_old": {
+            "type": "integer",
+            "description": "清理多少小时前的锁，默认24小时",
+            "default": 24,
+            "example": 24
           }
         }
       },
@@ -1431,6 +1734,194 @@
             }
           }
         ]
+      },
+      "StoreMigrationResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "total_schemas": {
+                    "type": "integer",
+                    "description": "总的表结构定义数量",
+                    "example": 3
+                  },
+                  "tables_migrated": {
+                    "type": "integer",
+                    "description": "成功迁移的表数量",
+                    "example": 3
+                  },
+                  "migration_results": {
+                    "type": "array",
+                    "description": "详细的迁移结果",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "table_name": {
+                          "type": "string",
+                          "example": "user_behavior"
+                        },
+                        "database_type": {
+                          "type": "string",
+                          "example": "main"
+                        },
+                        "partition_type": {
+                          "type": "string",
+                          "example": "store"
+                        },
+                        "schema_version": {
+                          "type": "string",
+                          "example": "1.0.0"
+                        },
+                        "success": { "type": "boolean", "example": true },
+                        "message": {
+                          "type": "string",
+                          "example": "门店分表迁移成功到版本 1.0.0"
+                        },
+                        "actual_table_name": {
+                          "type": "string",
+                          "example": "user_behavior1001"
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "错误信息（失败时）"
+                        },
+                        "upgrade_notes": {
+                          "type": "string",
+                          "description": "升级说明"
+                        }
+                      }
+                    }
+                  },
+                  "store_id": {
+                    "type": "string",
+                    "description": "门店ID",
+                    "example": "1001"
+                  },
+                  "enterprise_id": {
+                    "type": "integer",
+                    "description": "企业ID",
+                    "example": 1
+                  },
+                  "enterprise_name": {
+                    "type": "string",
+                    "description": "企业名称",
+                    "example": "测试企业"
+                  },
+                  "migration_scope": {
+                    "type": "string",
+                    "description": "迁移范围",
+                    "example": "企业 测试企业"
+                  }
+                }
+              },
+              "summary": {
+                "type": "object",
+                "properties": {
+                  "migration_success": { "type": "integer", "example": 3 },
+                  "migration_failure": { "type": "integer", "example": 0 },
+                  "by_database_type": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "total": { "type": "integer" },
+                        "success": { "type": "integer" },
+                        "failure": { "type": "integer" }
+                      }
+                    },
+                    "example": {
+                      "main": { "total": 2, "success": 2, "failure": 0 },
+                      "log": { "total": 1, "success": 1, "failure": 0 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MigrationLocksResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MigrationLock"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "CleanupLocksResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "cleaned_count": {
+                    "type": "integer",
+                    "description": "清理的锁数量",
+                    "example": 5
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "LockConflictResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "message": {
+            "type": "string",
+            "example": "迁移被锁定，无法执行"
+          },
+          "conflict_lock": {
+            "type": "object",
+            "properties": {
+              "lock_key": {
+                "type": "string",
+                "example": "SINGLE_TABLE_users_main_none"
+              },
+              "table_name": {
+                "type": "string",
+                "example": "users"
+              },
+              "partition_type": {
+                "type": "string",
+                "example": "none"
+              },
+              "lock_type": {
+                "type": "string",
+                "example": "SINGLE_TABLE"
+              },
+              "start_time": {
+                "type": "string",
+                "format": "date-time",
+                "example": "2024-01-01T10:00:00.000Z"
+              },
+              "lock_holder": {
+                "type": "string",
+                "example": "hostname-1234-abcd1234"
+              }
+            }
+          }
+        }
       }
     },
     "responses": {
