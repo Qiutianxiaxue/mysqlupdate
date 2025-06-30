@@ -124,12 +124,18 @@ export class DatabaseMigrationService {
   /**
    * 统一的表迁移方法
    * 通过表名、数据库类型、分区类型和版本号来确定操作类型
+   * @param tableName 表名
+   * @param databaseType 数据库类型
+   * @param schemaVersion 版本号（可选，默认最新版本）
+   * @param partitionType 分区类型（可选，自动检测）
+   * @param enterpriseId 企业ID（可选，指定特定企业进行迁移）
    */
   async migrateTable(
     tableName: string,
     databaseType: string,
     schemaVersion?: string,
-    partitionType?: string
+    partitionType?: string,
+    enterpriseId?: number
   ): Promise<void> {
     try {
       // 生成迁移批次ID
@@ -174,10 +180,32 @@ export class DatabaseMigrationService {
         );
       }
 
-      // 获取所有企业
-      const enterprises = await Enterprise.findAll({
-        where: { status: 1 },
-      });
+      // 获取需要迁移的企业
+      let enterprises: Enterprise[];
+      if (enterpriseId) {
+        // 指定特定企业
+        const targetEnterprise = await Enterprise.findOne({
+          where: {
+            enterprise_id: enterpriseId,
+            status: 1,
+          },
+        });
+
+        if (!targetEnterprise) {
+          throw new Error(`未找到企业ID为 ${enterpriseId} 的有效企业`);
+        }
+
+        enterprises = [targetEnterprise];
+        logger.info(
+          `🎯 指定企业迁移: ${targetEnterprise.enterprise_name} (ID: ${enterpriseId})`
+        );
+      } else {
+        // 获取所有企业
+        enterprises = await Enterprise.findAll({
+          where: { status: 1 },
+        });
+        logger.info(`🌍 全企业迁移: 共 ${enterprises.length} 个企业`);
+      }
 
       let successCount = 0;
       let failedCount = 0;
@@ -186,15 +214,21 @@ export class DatabaseMigrationService {
         try {
           await this.migrateTableForEnterprise(enterprise, schema);
           successCount++;
-          logger.info(`企业 ${enterprise.enterprise_name} 迁移成功`);
+          logger.info(
+            `✅ 企业 ${enterprise.enterprise_name} (ID: ${enterprise.enterprise_id}) 迁移成功`
+          );
         } catch (error) {
           failedCount++;
-          logger.error(`企业 ${enterprise.enterprise_name} 迁移失败:`, error);
+          logger.error(
+            `❌ 企业 ${enterprise.enterprise_name} (ID: ${enterprise.enterprise_id}) 迁移失败:`,
+            error
+          );
         }
       }
 
+      const migrationScope = enterpriseId ? "指定企业" : "全企业";
       logger.info(
-        `迁移完成: 成功 ${successCount} 个企业，失败 ${failedCount} 个企业`
+        `🏁 ${migrationScope}迁移完成: 成功 ${successCount} 个企业，失败 ${failedCount} 个企业`
       );
     } catch (error) {
       logger.error(`迁移表 ${tableName} 失败:`, error);

@@ -367,8 +367,13 @@ export class MigrationController {
    */
   async executeMigration(req: Request, res: Response): Promise<void> {
     try {
-      const { table_name, database_type, partition_type, schema_version } =
-        req.body;
+      const {
+        table_name,
+        database_type,
+        partition_type,
+        schema_version,
+        enterprise_id,
+      } = req.body;
 
       if (!table_name || !database_type || !partition_type) {
         res.status(400).json({
@@ -477,17 +482,36 @@ export class MigrationController {
         return;
       }
 
+      // 验证企业ID（如果提供）
+      if (
+        enterprise_id &&
+        (typeof enterprise_id !== "number" || enterprise_id <= 0)
+      ) {
+        res.status(400).json({
+          success: false,
+          message: "enterprise_id 必须是正整数",
+        });
+        return;
+      }
+
+      const migrationScope = enterprise_id
+        ? `指定企业(ID: ${enterprise_id})`
+        : "全企业";
       logger.info(
-        `开始执行表 ${table_name} (${database_type}) 的迁移，使用版本 ${schema.schema_version}`
+        `开始执行表 ${table_name} (${database_type}) 的${migrationScope}迁移，使用版本 ${schema.schema_version}`
       );
 
       // 获取迁移锁
+      const lockOperation = enterprise_id
+        ? `单表迁移(企业ID: ${enterprise_id}): ${schema.table_name} 到版本 ${schema.schema_version}`
+        : `单表迁移(全企业): ${schema.table_name} 到版本 ${schema.schema_version}`;
+
       const lockResult = await this.lockService.acquireLock(
         "SINGLE_TABLE",
         schema.table_name,
         schema.database_type,
         schema.partition_type,
-        `单表迁移: ${schema.table_name} 到版本 ${schema.schema_version}`
+        lockOperation
       );
 
       if (!lockResult.success) {
@@ -516,7 +540,8 @@ export class MigrationController {
           schema.table_name,
           schema.database_type,
           schema.schema_version,
-          schema.partition_type
+          schema.partition_type,
+          enterprise_id // 传递企业ID参数
         );
       } finally {
         // 释放锁
@@ -525,13 +550,15 @@ export class MigrationController {
 
       res.json({
         success: true,
-        message: `表 ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 版本 ${schema.schema_version} 迁移执行完成`,
+        message: `表 ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 版本 ${schema.schema_version} ${migrationScope}迁移执行完成`,
         data: {
           table_name: schema.table_name,
           database_type: schema.database_type,
           partition_type: schema.partition_type,
           schema_version: schema.schema_version,
           upgrade_notes: schema.upgrade_notes,
+          migration_scope: migrationScope,
+          enterprise_id: enterprise_id || null,
         },
       });
     } catch (error) {
@@ -546,18 +573,59 @@ export class MigrationController {
 
   /**
    * 一键迁移所有已确认的表（基于TableSchema表中的配置）
+   * @param enterprise_id 可选，指定特定企业进行迁移
    */
   async migrateAllTables(req: Request, res: Response): Promise<void> {
     try {
-      logger.info("开始一键迁移所有已确认的表");
+      const { enterprise_id } = req.body;
+
+      // 验证企业ID（如果提供）
+      let targetEnterprise = null;
+      if (enterprise_id) {
+        if (typeof enterprise_id !== "number" || enterprise_id <= 0) {
+          res.status(400).json({
+            success: false,
+            message: "enterprise_id 必须是正整数",
+          });
+          return;
+        }
+
+        // 验证企业是否存在
+        targetEnterprise = await Enterprise.findOne({
+          where: {
+            enterprise_id: enterprise_id,
+            status: 1,
+          },
+        });
+
+        if (!targetEnterprise) {
+          res.status(404).json({
+            success: false,
+            message: `未找到企业ID为 ${enterprise_id} 的有效企业`,
+          });
+          return;
+        }
+      }
+
+      const migrationScope = enterprise_id
+        ? `指定企业 ${targetEnterprise!.enterprise_name} (ID: ${enterprise_id})`
+        : "全企业";
+
+      logger.info(`开始${migrationScope}一键迁移所有已确认的表`);
 
       // 获取全量迁移锁
+      const lockOperation = enterprise_id
+        ? `一键迁移所有表(企业ID: ${enterprise_id}): ${
+            targetEnterprise!.enterprise_name
+          }`
+        : "一键迁移所有表(全企业)";
+
       const lockResult = await this.lockService.acquireLock(
         "ALL_TABLES",
         undefined,
         undefined,
         undefined,
-        "一键迁移所有表"
+        lockOperation
       );
 
       if (!lockResult.success) {
@@ -602,12 +670,17 @@ export class MigrationController {
               total_schemas: 0,
               tables_migrated: 0,
               migration_results: [],
+              enterprise_id: enterprise_id || null,
+              enterprise_name: targetEnterprise?.enterprise_name || null,
+              migration_scope: migrationScope,
             },
           });
           return;
         }
 
-        logger.info(`找到 ${allSchemas.length} 个表结构定义需要迁移`);
+        logger.info(
+          `找到 ${allSchemas.length} 个表结构定义需要为${migrationScope}迁移`
+        );
 
         // 2. 对每个表结构定义执行迁移
         const migrationResults: Array<{
@@ -626,16 +699,20 @@ export class MigrationController {
 
         for (const schema of allSchemas) {
           try {
+            const tableScope = enterprise_id
+              ? `为企业 ${targetEnterprise!.enterprise_name} `
+              : "";
             logger.info(
-              `迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
+              `${tableScope}迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
             );
 
-            // 执行迁移
+            // 执行迁移（传递企业ID参数）
             await this.migrationService.migrateTable(
               schema.table_name,
               schema.database_type,
               schema.schema_version,
-              schema.partition_type
+              schema.partition_type,
+              enterprise_id
             );
 
             migrationResults.push({
@@ -651,7 +728,7 @@ export class MigrationController {
             });
 
             successCount++;
-            logger.info(`✅ 表 ${schema.table_name} 迁移成功`);
+            logger.info(`✅ ${tableScope}表 ${schema.table_name} 迁移成功`);
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : "未知错误";
@@ -670,12 +747,18 @@ export class MigrationController {
             });
 
             failureCount++;
-            logger.error(`❌ 表 ${schema.table_name} 迁移失败:`, error);
+            const errorTableScope = enterprise_id
+              ? `为企业 ${targetEnterprise!.enterprise_name} `
+              : "";
+            logger.error(
+              `❌ ${errorTableScope}表 ${schema.table_name} 迁移失败:`,
+              error
+            );
           }
         }
 
         const totalTables = allSchemas.length;
-        const message = `一键迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
+        const message = `${migrationScope}一键迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
 
         // 3. 按数据库类型统计结果
         const byDatabaseType: {
@@ -705,6 +788,9 @@ export class MigrationController {
             total_schemas: totalTables,
             tables_migrated: successCount,
             migration_results: migrationResults,
+            enterprise_id: enterprise_id || null,
+            enterprise_name: targetEnterprise?.enterprise_name || null,
+            migration_scope: migrationScope,
           },
           summary: {
             migration_success: successCount,
@@ -719,10 +805,12 @@ export class MigrationController {
         await this.lockService.releaseLock(lockKey);
       }
     } catch (error) {
-      logger.error("一键迁移失败:", error);
+      const { enterprise_id } = req.body;
+      const errorScope = enterprise_id ? "指定企业" : "全企业";
+      logger.error(`${errorScope}一键迁移失败:`, error);
       res.status(500).json({
         success: false,
-        message: "一键迁移失败",
+        message: `${errorScope}一键迁移失败`,
         error: error instanceof Error ? error.message : "未知错误",
       });
     }

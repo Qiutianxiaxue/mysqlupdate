@@ -51,7 +51,6 @@ router.post(
   "/execute-all",
   migrationController.migrateAllTables.bind(migrationController)
 );
-
 // 企业管理
 router.post(
   "/enterprises/list",
