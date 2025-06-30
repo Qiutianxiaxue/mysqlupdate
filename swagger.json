@@ -1004,25 +1004,24 @@
           },
           "time_interval": {
             "type": "string",
-            "description": "时间间隔（时间分表）",
+            "enum": ["day", "month", "year"],
+            "description": "时间分区间隔：day-按天，month-按月，year-按年（时间分表时使用）",
             "example": "month"
-          },
-          "time_start_date": {
-            "type": "string",
-            "format": "date",
-            "description": "开始日期（时间分表）",
-            "example": "2024-01-01"
-          },
-          "time_end_date": {
-            "type": "string",
-            "format": "date",
-            "description": "结束日期（时间分表）",
-            "example": "2024-12-31"
           },
           "time_format": {
             "type": "string",
-            "description": "时间格式（时间分表）",
+            "description": "时间分区表名格式，如：_YYYY_MM、_YYYY_MM_DD、_YYYY（时间分表时使用）",
             "example": "_YYYY_MM"
+          },
+          "current_version": {
+            "type": "string",
+            "description": "升级前的版本号，用于记录版本变化历史",
+            "example": "0.9.0"
+          },
+          "changes_detected": {
+            "type": "string",
+            "description": "检测到的变化列表，JSON格式存储",
+            "example": "[\"新增列user_type\", \"修改列email长度\"]"
           },
           "create_time": {
             "type": "string",
@@ -1240,25 +1239,24 @@
           },
           "time_interval": {
             "type": "string",
-            "description": "时间间隔（时间分表）",
+            "enum": ["day", "month", "year"],
+            "description": "时间分区间隔：day-按天，month-按月，year-按年（仅时间分表时需要）",
             "example": "month"
-          },
-          "time_start_date": {
-            "type": "string",
-            "format": "date",
-            "description": "开始日期（时间分表）",
-            "example": "2024-01-01"
-          },
-          "time_end_date": {
-            "type": "string",
-            "format": "date",
-            "description": "结束日期（时间分表）",
-            "example": "2024-12-31"
           },
           "time_format": {
             "type": "string",
-            "description": "时间格式（时间分表）",
+            "description": "时间分区表名格式，如：_YYYY_MM、_YYYY_MM_DD、_YYYY（仅时间分表时需要）",
             "example": "_YYYY_MM"
+          },
+          "current_version": {
+            "type": "string",
+            "description": "升级前的版本号，用于记录版本变化历史（可选）",
+            "example": "0.9.0"
+          },
+          "changes_detected": {
+            "type": "string",
+            "description": "检测到的变化列表，JSON格式存储（可选）",
+            "example": "[\"新增列user_type\", \"修改列email长度\"]"
           }
         }
       },
