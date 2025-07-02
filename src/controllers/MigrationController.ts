@@ -1397,6 +1397,158 @@ export class MigrationController {
       });
     }
   }
+
+  /**
+   * 为指定企业迁移指定门店的表
+   */
+  private async migrateStoreTableForEnterprise(
+    enterprise: Enterprise,
+    schema: TableSchema,
+    storeId: string
+  ): Promise<void> {
+    try {
+      // 直接调用migrationService的门店表迁移方法
+      await this.migrationService.migrateStoreTable(
+        schema.table_name,
+        schema.database_type,
+        schema.schema_version,
+        storeId,
+        enterprise.enterprise_id
+      );
+
+      logger.info(
+        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 的门店 ${storeId} 表 ${schema.table_name} 迁移成功`
+      );
+    } catch (error) {
+      logger.error(
+        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * 一键迁移检查 - 预览所有会执行的SQL但不执行
+   * @param req Request对象
+   * @param res Response对象
+   */
+  async checkMigrateAllTables(req: Request, res: Response): Promise<void> {
+    try {
+      const { enterprise_id } = req.body;
+
+      // 验证企业ID（如果提供）
+      let targetEnterprise = null;
+      if (enterprise_id) {
+        if (typeof enterprise_id !== "number" || enterprise_id <= 0) {
+          res.status(400).json({
+            success: false,
+            message: "enterprise_id 必须是正整数",
+          });
+          return;
+        }
+
+        // 验证企业是否存在
+        targetEnterprise = await Enterprise.findOne({
+          where: {
+            enterprise_id: enterprise_id,
+            status: 1,
+          },
+        });
+
+        if (!targetEnterprise) {
+          res.status(404).json({
+            success: false,
+            message: `未找到企业ID为 ${enterprise_id} 的有效企业`,
+          });
+          return;
+        }
+      }
+
+      const migrationScope = enterprise_id
+        ? `指定企业 ${targetEnterprise!.enterprise_name} (ID: ${enterprise_id})`
+        : "全企业";
+
+      logger.info(`开始${migrationScope}一键迁移检查，预览所有SQL语句`);
+
+      // 获取全量迁移锁（检查模式，防止与实际迁移冲突）
+      const lockOperation = enterprise_id
+        ? `一键迁移检查(企业ID: ${enterprise_id}): ${
+            targetEnterprise!.enterprise_name
+          }`
+        : "一键迁移检查(全企业)";
+
+      const lockResult = await this.lockService.acquireLock(
+        "ALL_TABLES",
+        undefined,
+        undefined,
+        undefined,
+        lockOperation
+      );
+
+      if (!lockResult.success) {
+        res.status(409).json({
+          success: false,
+          message: `无法获取迁移检查锁: ${lockResult.message}`,
+          error: "MIGRATION_LOCK_CONFLICT",
+          conflict_info: lockResult.conflictLock
+            ? {
+                table_name: lockResult.conflictLock.table_name,
+                database_type: lockResult.conflictLock.database_type,
+                partition_type: lockResult.conflictLock.partition_type,
+                lock_type: lockResult.conflictLock.lock_type,
+                start_time: lockResult.conflictLock.start_time,
+                lock_holder: lockResult.conflictLock.lock_holder,
+              }
+            : undefined,
+        });
+        return;
+      }
+
+      const lockKey = lockResult.lock!.lock_key;
+
+      try {
+        // 执行一键迁移检查
+        const checkResult = await this.migrationService.checkMigrateAllTables(
+          enterprise_id
+        );
+
+        const message = `${migrationScope}一键迁移检查完成！共收集 ${checkResult.total_sql_statements} 条SQL语句，涉及 ${checkResult.total_schemas} 个表结构定义和 ${checkResult.total_enterprises} 个企业`;
+
+        res.json({
+          success: true,
+          message,
+          data: {
+            total_schemas: checkResult.total_schemas,
+            total_enterprises: checkResult.total_enterprises,
+            total_sql_statements: checkResult.total_sql_statements,
+            migration_plan: checkResult.migration_plan,
+            enterprise_id: enterprise_id || null,
+            enterprise_name: targetEnterprise?.enterprise_name || null,
+            migration_scope: migrationScope,
+          },
+          summary: {
+            by_database_type: checkResult.summary_by_database_type,
+            by_enterprise: checkResult.summary_by_enterprise,
+          },
+        });
+
+        logger.info(message);
+      } finally {
+        // 释放锁
+        await this.lockService.releaseLock(lockKey);
+      }
+    } catch (error) {
+      const { enterprise_id } = req.body;
+      const errorScope = enterprise_id ? "指定企业" : "全企业";
+      logger.error(`${errorScope}一键迁移检查失败:`, error);
+      res.status(500).json({
+        success: false,
+        message: `${errorScope}一键迁移检查失败`,
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  }
 }
 
 export default MigrationController;

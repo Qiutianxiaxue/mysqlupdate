@@ -403,13 +403,26 @@
       "post": {
         "tags": ["迁移执行"],
         "summary": "根据门店ID迁移所有门店分表",
-        "description": "为指定企业的指定门店创建/迁移所有门店分区的表",
+        "description": "为指定企业的指定门店迁移所有门店分表结构",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ExecuteStoreMigrationRequest"
+                "type": "object",
+                "required": ["enterprise_id", "store_id"],
+                "properties": {
+                  "enterprise_id": {
+                    "type": "integer",
+                    "description": "企业ID",
+                    "example": 1
+                  },
+                  "store_id": {
+                    "type": "string",
+                    "description": "门店ID",
+                    "example": "001"
+                  }
+                }
               }
             }
           }
@@ -420,13 +433,65 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StoreMigrationResponse"
+                  "$ref": "#/components/schemas/MigrateStoreResponse"
                 }
               }
             }
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "迁移被锁定",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockConflictResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/migration/check-all": {
+      "post": {
+        "tags": ["迁移执行"],
+        "summary": "一键迁移检查",
+        "description": "预览所有会执行的SQL语句但不实际执行迁移，用于检查迁移计划",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enterprise_id": {
+                    "type": "integer",
+                    "description": "企业ID，可选，不传则检查所有企业的迁移计划",
+                    "example": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "迁移检查完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationCheckResponse"
+                }
+              }
+            }
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
@@ -2080,6 +2145,206 @@
                         "description": "检测到分表规则的表数量",
                         "example": 7
                       }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MigrationCheckResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "total_schemas": {
+                    "type": "integer",
+                    "description": "总的表结构定义数量",
+                    "example": 5
+                  },
+                  "total_enterprises": {
+                    "type": "integer",
+                    "description": "涉及的企业数量",
+                    "example": 2
+                  },
+                  "total_sql_statements": {
+                    "type": "integer",
+                    "description": "总共会执行的SQL语句数量",
+                    "example": 15
+                  },
+                  "migration_plan": {
+                    "type": "array",
+                    "description": "详细的迁移计划",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "enterprise_name": {
+                          "type": "string",
+                          "description": "企业名称",
+                          "example": "测试企业"
+                        },
+                        "enterprise_id": {
+                          "type": "integer",
+                          "description": "企业ID",
+                          "example": 1
+                        },
+                        "database_type": {
+                          "type": "string",
+                          "enum": ["main", "log", "order", "static"],
+                          "description": "数据库类型"
+                        },
+                        "table_name": {
+                          "type": "string",
+                          "description": "原始表名",
+                          "example": "users"
+                        },
+                        "actual_table_name": {
+                          "type": "string",
+                          "description": "实际表名（包含分表后缀）",
+                          "example": "users001"
+                        },
+                        "partition_type": {
+                          "type": "string",
+                          "enum": ["store", "time", "none"],
+                          "description": "分区类型"
+                        },
+                        "schema_version": {
+                          "type": "string",
+                          "description": "表结构版本",
+                          "example": "1.0.0"
+                        },
+                        "migration_type": {
+                          "type": "string",
+                          "enum": ["CREATE", "ALTER", "DROP", "INDEX"],
+                          "description": "迁移类型"
+                        },
+                        "sql_statement": {
+                          "type": "string",
+                          "description": "要执行的SQL语句",
+                          "example": "CREATE TABLE `users001` (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL);"
+                        },
+                        "description": {
+                          "type": "string",
+                          "description": "操作描述",
+                          "example": "创建表 users001"
+                        }
+                      }
+                    }
+                  },
+                  "enterprise_id": {
+                    "type": "integer",
+                    "description": "指定的企业ID（如果有）",
+                    "nullable": true,
+                    "example": 1
+                  },
+                  "enterprise_name": {
+                    "type": "string",
+                    "description": "指定的企业名称（如果有）",
+                    "nullable": true,
+                    "example": "测试企业"
+                  },
+                  "migration_scope": {
+                    "type": "string",
+                    "description": "迁移范围描述",
+                    "example": "全企业"
+                  }
+                }
+              },
+              "summary": {
+                "type": "object",
+                "description": "统计摘要",
+                "properties": {
+                  "by_database_type": {
+                    "type": "object",
+                    "description": "按数据库类型统计",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "total_tables": {
+                          "type": "integer",
+                          "description": "表数量"
+                        },
+                        "total_sql_statements": {
+                          "type": "integer",
+                          "description": "SQL语句数量"
+                        },
+                        "enterprises_count": {
+                          "type": "integer",
+                          "description": "涉及的企业数量"
+                        }
+                      }
+                    }
+                  },
+                  "by_enterprise": {
+                    "type": "object",
+                    "description": "按企业统计",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "enterprise_name": {
+                          "type": "string",
+                          "description": "企业名称"
+                        },
+                        "total_tables": {
+                          "type": "integer",
+                          "description": "表数量"
+                        },
+                        "total_sql_statements": {
+                          "type": "integer",
+                          "description": "SQL语句数量"
+                        },
+                        "by_database_type": {
+                          "type": "object",
+                          "description": "按数据库类型细分统计",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "total_tables": {
+                                "type": "integer"
+                              },
+                              "total_sql_statements": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MigrateStoreResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "total_schemas": {
+                    "type": "integer",
+                    "description": "总的表结构定义数量",
+                    "example": 3
+                  },
+                  "tables_migrated": {
+                    "type": "integer",
+                    "description": "成功迁移的表数量",
+                    "example": 3
+                  },
+                  "migration_results": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
                     }
                   }
                 }

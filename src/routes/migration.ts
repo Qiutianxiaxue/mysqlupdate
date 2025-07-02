@@ -57,6 +57,13 @@ router.post(
   "/execute-store",
   migrationController.migrateStoreTablesById.bind(migrationController)
 );
+
+// 一键迁移检查 - 预览所有会执行的SQL但不执行
+router.post(
+  "/check-all",
+  migrationController.checkMigrateAllTables.bind(migrationController)
+);
+
 // 企业管理
 router.post(
   "/enterprises/list",

@@ -5,6 +5,7 @@ import MigrationHistory from "@/models/MigrationHistory";
 import DatabaseConnectionManager from "./DatabaseConnectionManager";
 import logger from "@/utils/logger";
 import { v4 as uuidv4 } from "uuid";
+import { QueryTypes } from "sequelize";
 
 interface ColumnDefinition {
   name: string;
@@ -2707,6 +2708,687 @@ export class DatabaseMigrationService {
       // 清理当前schema
       this.currentSchema = null;
     }
+  }
+
+  // 新增：用于收集SQL的私有属性和方法
+  private collectedSqls: Array<{
+    enterprise_name: string;
+    enterprise_id: number;
+    database_type: string;
+    table_name: string;
+    actual_table_name: string;
+    partition_type: string;
+    schema_version: string;
+    migration_type: "CREATE" | "ALTER" | "DROP" | "INDEX";
+    sql_statement: string;
+    description: string;
+  }> = [];
+
+  /**
+   * 收集SQL而不执行（用于预览）
+   */
+  private async collectSql(
+    enterprise: Enterprise,
+    tableName: string,
+    actualTableName: string,
+    databaseType: string,
+    partitionType: string,
+    schemaVersion: string,
+    migrationType: "CREATE" | "ALTER" | "DROP" | "INDEX",
+    sqlStatement: string,
+    description: string
+  ): Promise<void> {
+    this.collectedSqls.push({
+      enterprise_name: enterprise.enterprise_name || "",
+      enterprise_id: enterprise.enterprise_id,
+      database_type: databaseType,
+      table_name: tableName,
+      actual_table_name: actualTableName,
+      partition_type: partitionType,
+      schema_version: schemaVersion,
+      migration_type: migrationType,
+      sql_statement: sqlStatement,
+      description: description,
+    });
+
+    logger.info(
+      `收集SQL [${migrationType}]: ${sqlStatement.substring(0, 100)}...`
+    );
+  }
+
+  /**
+   * 一键迁移检查 - 收集所有会执行的SQL但不执行
+   * @param enterpriseId 可选，指定特定企业进行检查
+   */
+  async checkMigrateAllTables(enterpriseId?: number): Promise<{
+    total_schemas: number;
+    total_enterprises: number;
+    total_sql_statements: number;
+    migration_plan: Array<{
+      enterprise_name: string;
+      enterprise_id: number;
+      database_type: string;
+      table_name: string;
+      actual_table_name: string;
+      partition_type: string;
+      schema_version: string;
+      migration_type: "CREATE" | "ALTER" | "DROP" | "INDEX";
+      sql_statement: string;
+      description: string;
+    }>;
+    summary_by_database_type: {
+      [key: string]: {
+        total_tables: number;
+        total_sql_statements: number;
+        enterprises_count: number;
+      };
+    };
+    summary_by_enterprise: {
+      [key: string]: {
+        enterprise_name: string;
+        total_tables: number;
+        total_sql_statements: number;
+        by_database_type: {
+          [key: string]: {
+            total_tables: number;
+            total_sql_statements: number;
+          };
+        };
+      };
+    };
+  }> {
+    try {
+      // 清空之前收集的SQL
+      this.collectedSqls = [];
+
+      logger.info(`🔍 开始一键迁移检查，预览所有会执行的SQL语句`);
+
+      // 1. 获取TableSchema表中所有激活的表结构定义
+      const allSchemas = await TableSchema.findAll({
+        where: {
+          is_active: true,
+        },
+        order: [
+          ["database_type", "ASC"],
+          ["table_name", "ASC"],
+          ["schema_version", "DESC"],
+        ],
+      });
+
+      if (allSchemas.length === 0) {
+        return {
+          total_schemas: 0,
+          total_enterprises: 0,
+          total_sql_statements: 0,
+          migration_plan: [],
+          summary_by_database_type: {},
+          summary_by_enterprise: {},
+        };
+      }
+
+      // 2. 获取需要检查的企业
+      let enterprises: Enterprise[];
+      if (enterpriseId) {
+        const targetEnterprise = await Enterprise.findOne({
+          where: {
+            enterprise_id: enterpriseId,
+            status: 1,
+          },
+        });
+
+        if (!targetEnterprise) {
+          throw new Error(`未找到企业ID为 ${enterpriseId} 的有效企业`);
+        }
+
+        enterprises = [targetEnterprise];
+        logger.info(
+          `🎯 指定企业检查: ${targetEnterprise.enterprise_name} (ID: ${enterpriseId})`
+        );
+      } else {
+        enterprises = await Enterprise.findAll({
+          where: { status: 1 },
+        });
+        logger.info(`🌍 全企业检查: 共 ${enterprises.length} 个企业`);
+      }
+
+      // 3. 为每个企业和每个表结构定义收集SQL
+      for (const enterprise of enterprises) {
+        for (const schema of allSchemas) {
+          try {
+            await this.checkTableForEnterprise(enterprise, schema);
+          } catch (error) {
+            logger.error(
+              `检查企业 ${enterprise.enterprise_name} 的表 ${schema.table_name} 失败:`,
+              error
+            );
+            // 继续处理其他表，不中断整个检查过程
+          }
+        }
+      }
+
+      // 4. 生成统计信息
+      const summaryByDatabaseType: {
+        [key: string]: {
+          total_tables: number;
+          total_sql_statements: number;
+          enterprises_count: number;
+        };
+      } = {};
+
+      const summaryByEnterprise: {
+        [key: string]: {
+          enterprise_name: string;
+          total_tables: number;
+          total_sql_statements: number;
+          by_database_type: {
+            [key: string]: {
+              total_tables: number;
+              total_sql_statements: number;
+            };
+          };
+        };
+      } = {};
+
+      // 按数据库类型统计
+      for (const sql of this.collectedSqls) {
+        const dbType = sql.database_type;
+        if (!summaryByDatabaseType[dbType]) {
+          summaryByDatabaseType[dbType] = {
+            total_tables: 0,
+            total_sql_statements: 0,
+            enterprises_count: 0,
+          };
+        }
+        summaryByDatabaseType[dbType].total_sql_statements++;
+
+        // 统计唯一的表数量（通过Set去重）
+        const uniqueTables = new Set(
+          this.collectedSqls
+            .filter((s) => s.database_type === dbType)
+            .map((s) => `${s.enterprise_id}_${s.table_name}`)
+        );
+        summaryByDatabaseType[dbType].total_tables = uniqueTables.size;
+
+        // 统计涉及的企业数量
+        const uniqueEnterprises = new Set(
+          this.collectedSqls
+            .filter((s) => s.database_type === dbType)
+            .map((s) => s.enterprise_id)
+        );
+        summaryByDatabaseType[dbType].enterprises_count =
+          uniqueEnterprises.size;
+      }
+
+      // 按企业统计
+      for (const sql of this.collectedSqls) {
+        const enterpriseKey = sql.enterprise_id.toString();
+        if (!summaryByEnterprise[enterpriseKey]) {
+          summaryByEnterprise[enterpriseKey] = {
+            enterprise_name: sql.enterprise_name,
+            total_tables: 0,
+            total_sql_statements: 0,
+            by_database_type: {},
+          };
+        }
+
+        summaryByEnterprise[enterpriseKey].total_sql_statements++;
+
+        // 按企业的数据库类型统计
+        const dbType = sql.database_type;
+        if (!summaryByEnterprise[enterpriseKey].by_database_type[dbType]) {
+          summaryByEnterprise[enterpriseKey].by_database_type[dbType] = {
+            total_tables: 0,
+            total_sql_statements: 0,
+          };
+        }
+        summaryByEnterprise[enterpriseKey].by_database_type[dbType]
+          .total_sql_statements++;
+
+        // 统计每个企业的唯一表数量
+        const uniqueTablesForEnterprise = new Set(
+          this.collectedSqls
+            .filter((s) => s.enterprise_id === sql.enterprise_id)
+            .map((s) => s.table_name)
+        );
+        summaryByEnterprise[enterpriseKey].total_tables =
+          uniqueTablesForEnterprise.size;
+
+        // 统计每个企业按数据库类型的唯一表数量
+        const uniqueTablesForEnterpriseByDb = new Set(
+          this.collectedSqls
+            .filter(
+              (s) =>
+                s.enterprise_id === sql.enterprise_id &&
+                s.database_type === dbType
+            )
+            .map((s) => s.table_name)
+        );
+        summaryByEnterprise[enterpriseKey].by_database_type[
+          dbType
+        ].total_tables = uniqueTablesForEnterpriseByDb.size;
+      }
+
+      const migrationScope = enterpriseId ? "指定企业" : "全企业";
+      logger.info(
+        `🏁 ${migrationScope}迁移检查完成，共收集 ${this.collectedSqls.length} 条SQL语句`
+      );
+
+      return {
+        total_schemas: allSchemas.length,
+        total_enterprises: enterprises.length,
+        total_sql_statements: this.collectedSqls.length,
+        migration_plan: [...this.collectedSqls], // 创建副本
+        summary_by_database_type: summaryByDatabaseType,
+        summary_by_enterprise: summaryByEnterprise,
+      };
+    } catch (error) {
+      logger.error("一键迁移检查失败:", error);
+      throw error;
+    } finally {
+      // 清空收集的SQL
+      this.collectedSqls = [];
+    }
+  }
+
+  /**
+   * 为单个企业检查表迁移计划
+   */
+  private async checkTableForEnterprise(
+    enterprise: Enterprise,
+    schema: TableSchema
+  ): Promise<void> {
+    try {
+      const tableDefinition = JSON.parse(
+        schema.schema_definition
+      ) as TableDefinition;
+
+      // 获取对应数据库类型的连接
+      const connection = await this.connectionManager.getConnection(
+        enterprise,
+        schema.database_type
+      );
+
+      // 根据分区类型处理
+      if (schema.partition_type === "store") {
+        // 门店分表逻辑
+        await this.checkStorePartitionedTable(
+          connection,
+          tableDefinition,
+          enterprise,
+          schema
+        );
+      } else if (schema.partition_type === "time") {
+        // 时间分表逻辑
+        await this.checkTimePartitionedTableWithConfig(
+          connection,
+          tableDefinition,
+          schema,
+          enterprise
+        );
+      } else {
+        // 普通表
+        await this.checkTableWithConnection(
+          connection,
+          tableDefinition,
+          enterprise,
+          schema
+        );
+      }
+    } catch (error) {
+      logger.error(
+        `检查企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 的表 ${schema.table_name} 失败:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * 检查普通表的迁移计划
+   */
+  private async checkTableWithConnection(
+    connection: Sequelize,
+    tableDefinition: TableDefinition,
+    enterprise: Enterprise,
+    schema: TableSchema
+  ): Promise<void> {
+    const tableName = tableDefinition.tableName;
+
+    // 检查表是否存在
+    const tableExists = await this.tableExistsWithConnection(
+      connection,
+      tableName
+    );
+
+    if (tableDefinition.action === "DROP") {
+      if (tableExists) {
+        await this.collectSql(
+          enterprise,
+          tableName,
+          tableName,
+          schema.database_type,
+          schema.partition_type,
+          schema.schema_version,
+          "DROP",
+          `DROP TABLE \`${tableName}\`;`,
+          `删除表 ${tableName}`
+        );
+      }
+    } else if (!tableExists) {
+      // 表不存在，需要创建
+      const createSql = await this.generateCreateTableSql(
+        tableName,
+        tableDefinition
+      );
+      await this.collectSql(
+        enterprise,
+        tableName,
+        tableName,
+        schema.database_type,
+        schema.partition_type,
+        schema.schema_version,
+        "CREATE",
+        createSql,
+        `创建表 ${tableName}`
+      );
+
+      // 创建索引
+      if (tableDefinition.indexes && tableDefinition.indexes.length > 0) {
+        for (const index of tableDefinition.indexes) {
+          const indexSql = await this.generateCreateIndexSql(tableName, index);
+          await this.collectSql(
+            enterprise,
+            tableName,
+            tableName,
+            schema.database_type,
+            schema.partition_type,
+            schema.schema_version,
+            "INDEX",
+            indexSql,
+            `创建索引 ${index.name} 在表 ${tableName}`
+          );
+        }
+      }
+    } else {
+      // 表存在，检查是否需要修改
+      const alterSqls = await this.generateAlterTableSqls(
+        connection,
+        tableName,
+        tableDefinition
+      );
+      for (const alterSql of alterSqls) {
+        await this.collectSql(
+          enterprise,
+          tableName,
+          tableName,
+          schema.database_type,
+          schema.partition_type,
+          schema.schema_version,
+          "ALTER",
+          alterSql.sql,
+          alterSql.description
+        );
+      }
+    }
+  }
+
+  /**
+   * 检查门店分表的迁移计划
+   */
+  private async checkStorePartitionedTable(
+    connection: Sequelize,
+    tableDefinition: TableDefinition,
+    enterprise: Enterprise,
+    schema: TableSchema
+  ): Promise<void> {
+    try {
+      // 查询企业的所有门店
+      const stores = await this.queryStoreList(connection);
+      logger.info(
+        `检查企业 ${enterprise.enterprise_name} 的门店分表，共 ${stores.length} 个门店`
+      );
+
+      for (const store of stores) {
+        const storeId = store.submeter_id || store.store_id || store.id;
+        if (storeId) {
+          await this.checkTableWithConnection(
+            connection,
+            {
+              ...tableDefinition,
+              tableName: this.getTableName(
+                tableDefinition.tableName,
+                String(storeId)
+              ),
+            },
+            enterprise,
+            schema
+          );
+        }
+      }
+    } catch (error) {
+      logger.error(
+        `检查企业 ${enterprise.enterprise_name} 门店分表失败:`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * 检查时间分表的迁移计划
+   */
+  private async checkTimePartitionedTableWithConfig(
+    connection: Sequelize,
+    tableDefinition: TableDefinition,
+    schema: TableSchema,
+    enterprise: Enterprise
+  ): Promise<void> {
+    if (!schema.time_interval || !schema.time_format) {
+      logger.warn(
+        `时间分表 ${tableDefinition.tableName} 缺少时间配置，跳过检查`
+      );
+      return;
+    }
+
+    // 生成最近一段时间的分表（比如最近3个月到未来3个月）
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1); // 3个月前
+    const endDate = new Date(now.getFullYear(), now.getMonth() + 4, 0); // 3个月后
+
+    await this.checkTimePartitionedTable(
+      connection,
+      tableDefinition,
+      startDate,
+      endDate,
+      schema.time_interval || "day",
+      schema.time_format || "YYYYMMDD",
+      enterprise,
+      schema
+    );
+  }
+
+  /**
+   * 检查时间分表的迁移计划（具体实现）
+   */
+  private async checkTimePartitionedTable(
+    connection: Sequelize,
+    tableDefinition: TableDefinition,
+    startDate: Date,
+    endDate: Date,
+    interval: "day" | "month" | "year",
+    timeFormat: string,
+    enterprise: Enterprise,
+    schema: TableSchema
+  ): Promise<void> {
+    const currentDate = new Date(startDate);
+
+    while (currentDate <= endDate) {
+      const suffix = this.formatDateForTable(currentDate, interval, timeFormat);
+      const partitionTableName = this.getTableName(
+        tableDefinition.tableName,
+        suffix
+      );
+
+      await this.checkTableWithConnection(
+        connection,
+        { ...tableDefinition, tableName: partitionTableName },
+        enterprise,
+        schema
+      );
+
+      // 递增日期
+      if (interval === "day") {
+        currentDate.setDate(currentDate.getDate() + 1);
+      } else if (interval === "month") {
+        currentDate.setMonth(currentDate.getMonth() + 1);
+      } else if (interval === "year") {
+        currentDate.setFullYear(currentDate.getFullYear() + 1);
+      }
+    }
+  }
+
+  /**
+   * 生成创建表的SQL语句
+   */
+  private async generateCreateTableSql(
+    tableName: string,
+    tableDefinition: TableDefinition
+  ): Promise<string> {
+    let sql = `CREATE TABLE \`${tableName}\` (\n`;
+
+    // 处理列定义
+    const columnDefinitions: string[] = [];
+    const primaryKeys: string[] = [];
+
+    for (const column of tableDefinition.columns) {
+      let columnSql = `  \`${column.name}\` ${this.getDataType(column)}`;
+
+      if (!column.allowNull) {
+        columnSql += " NOT NULL";
+      }
+
+      if (column.autoIncrement) {
+        columnSql += " AUTO_INCREMENT";
+      }
+
+      if (column.defaultValue !== undefined) {
+        columnSql += ` DEFAULT ${this.getDefaultValue(column)}`;
+      }
+
+      if (column.comment) {
+        columnSql += ` COMMENT '${this.escapeComment(column.comment)}'`;
+      }
+
+      columnDefinitions.push(columnSql);
+
+      if (column.primaryKey) {
+        primaryKeys.push(column.name);
+      }
+    }
+
+    sql += columnDefinitions.join(",\n");
+
+    // 添加主键
+    if (primaryKeys.length > 0) {
+      sql += `,\n  PRIMARY KEY (\`${primaryKeys.join("`, `")}\`)`;
+    }
+
+    sql +=
+      "\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;";
+
+    return sql;
+  }
+
+  /**
+   * 生成创建索引的SQL语句
+   */
+  private async generateCreateIndexSql(
+    tableName: string,
+    index: { name: string; fields: string[]; unique?: boolean }
+  ): Promise<string> {
+    const indexType = index.unique ? "UNIQUE INDEX" : "INDEX";
+    const fields = index.fields.map((field) => `\`${field}\``).join(", ");
+    return `CREATE ${indexType} \`${index.name}\` ON \`${tableName}\` (${fields});`;
+  }
+
+  /**
+   * 生成修改表的SQL语句
+   */
+  private async generateAlterTableSqls(
+    connection: Sequelize,
+    tableName: string,
+    tableDefinition: TableDefinition
+  ): Promise<Array<{ sql: string; description: string }>> {
+    const alterSqls: Array<{ sql: string; description: string }> = [];
+
+    // 获取现有表结构
+    const existingColumns = await this.getExistingColumns(
+      connection,
+      tableName
+    );
+    const existingColumnNames = existingColumns.map(
+      (col: any) => col.COLUMN_NAME
+    );
+    const definedColumnNames = tableDefinition.columns.map((col) => col.name);
+
+    // 检查需要添加的列
+    const columnsToAdd = tableDefinition.columns.filter(
+      (col) => !existingColumnNames.includes(col.name)
+    );
+
+    for (const column of columnsToAdd) {
+      const sql = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${
+        column.name
+      }\` ${this.getDataType(column)}${!column.allowNull ? " NOT NULL" : ""}${
+        column.defaultValue !== undefined
+          ? ` DEFAULT ${this.getDefaultValue(column)}`
+          : ""
+      }${
+        column.comment ? ` COMMENT '${this.escapeComment(column.comment)}'` : ""
+      };`;
+
+      alterSqls.push({
+        sql,
+        description: `添加列 ${column.name} 到表 ${tableName}`,
+      });
+    }
+
+    // 检查需要删除的列
+    const columnsToRemove = existingColumnNames.filter(
+      (colName) => !definedColumnNames.includes(colName)
+    );
+
+    for (const columnName of columnsToRemove) {
+      alterSqls.push({
+        sql: `ALTER TABLE \`${tableName}\` DROP COLUMN \`${columnName}\`;`,
+        description: `删除表 ${tableName} 的列 ${columnName}`,
+      });
+    }
+
+    // 这里可以继续添加列修改、索引变更等检查逻辑...
+
+    return alterSqls;
+  }
+
+  /**
+   * 获取现有表的列信息
+   */
+  private async getExistingColumns(
+    connection: Sequelize,
+    tableName: string
+  ): Promise<any[]> {
+    const query = `
+      SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, 
+             COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tableName
+      ORDER BY ORDINAL_POSITION
+    `;
+
+    return await connection.query(query, {
+      replacements: { tableName },
+      type: QueryTypes.SELECT,
+    });
   }
 }
 
