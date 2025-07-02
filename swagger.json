@@ -169,7 +169,7 @@
       "post": {
         "tags": ["表结构检测"],
         "summary": "检测所有表结构变化",
-        "description": "检测基准数据库中所有表的结构变化",
+        "description": "检测基准数据库中所有表的结构变化。现已支持自动表名解析（@符号分割数据库类型）和分表类型检测（基于井号标识规则：#store、#time_day、#time_month、#time_year）",
         "responses": {
           "200": {
             "description": "检测成功",
@@ -191,7 +191,7 @@
       "post": {
         "tags": ["表结构检测"],
         "summary": "检测并保存表结构变化",
-        "description": "检测所有表结构变化并自动保存到系统中",
+        "description": "检测所有表结构变化并自动保存到系统中。现已支持自动表名解析（@符号分割数据库类型）和分表类型检测（基于井号标识规则：#store、#time_day、#time_month、#time_year）",
         "responses": {
           "200": {
             "description": "检测并保存成功",
@@ -270,6 +270,28 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/schema-detection/preview-partition": {
+      "get": {
+        "tags": ["表结构检测"],
+        "summary": "预览表名解析和分表类型检测结果",
+        "description": "预览基准数据库中所有表的表名解析（@符号分割数据库类型）和分表类型检测结果（基于井号标识规则：#store、#time_day、#time_month、#time_year）",
+        "responses": {
+          "200": {
+            "description": "预览成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewPartitionResponse"
+                }
+              }
+            }
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
@@ -1920,6 +1942,151 @@
             }
           }
         }
+      },
+      "PreviewPartitionResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/BaseResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": {
+                  "detection_results": {
+                    "type": "array",
+                    "description": "表名解析和分表类型检测结果",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "original_table_name": {
+                          "type": "string",
+                          "description": "原始表名（包含@符号的完整表名）",
+                          "example": "users#store@log"
+                        },
+                        "parsed_table_name": {
+                          "type": "string",
+                          "description": "解析后的表名（去除@符号后的部分）",
+                          "example": "users#store"
+                        },
+                        "clean_table_name": {
+                          "type": "string",
+                          "description": "清理后的表名（去除分表规则标识后的最终表名）",
+                          "example": "users"
+                        },
+                        "database_type": {
+                          "type": "string",
+                          "enum": ["main", "log", "order", "static"],
+                          "description": "解析出的数据库类型",
+                          "example": "log"
+                        },
+                        "partition_type": {
+                          "type": "string",
+                          "enum": ["store", "time", "none"],
+                          "description": "检测出的分表类型",
+                          "example": "store"
+                        },
+                        "time_interval": {
+                          "type": "string",
+                          "enum": ["day", "month", "year"],
+                          "description": "时间分表间隔（仅时间分表时有值）",
+                          "example": "month"
+                        },
+                        "time_format": {
+                          "type": "string",
+                          "description": "时间分表格式（仅时间分表时有值）",
+                          "example": "_YYYY_MM"
+                        },
+                        "has_parsing": {
+                          "type": "boolean",
+                          "description": "是否进行了表名解析（是否包含@符号）",
+                          "example": true
+                        },
+                        "has_partition": {
+                          "type": "boolean",
+                          "description": "是否检测到分表规则",
+                          "example": true
+                        },
+                        "has_rule_removal": {
+                          "type": "boolean",
+                          "description": "是否进行了分表规则标识清理",
+                          "example": true
+                        }
+                      }
+                    }
+                  },
+                  "summary": {
+                    "type": "object",
+                    "description": "统计信息",
+                    "properties": {
+                      "total_tables": {
+                        "type": "integer",
+                        "description": "总表数量",
+                        "example": 25
+                      },
+                      "by_database_type": {
+                        "type": "object",
+                        "description": "按数据库类型分组统计",
+                        "properties": {
+                          "main": {
+                            "type": "integer",
+                            "description": "主数据库表数量",
+                            "example": 15
+                          },
+                          "log": {
+                            "type": "integer",
+                            "description": "日志数据库表数量",
+                            "example": 5
+                          },
+                          "order": {
+                            "type": "integer",
+                            "description": "订单数据库表数量",
+                            "example": 3
+                          },
+                          "static": {
+                            "type": "integer",
+                            "description": "静态数据库表数量",
+                            "example": 2
+                          }
+                        }
+                      },
+                      "by_partition_type": {
+                        "type": "object",
+                        "description": "按分表类型分组统计",
+                        "properties": {
+                          "none": {
+                            "type": "integer",
+                            "description": "无分表的表数量",
+                            "example": 18
+                          },
+                          "store": {
+                            "type": "integer",
+                            "description": "门店分表的表数量",
+                            "example": 4
+                          },
+                          "time": {
+                            "type": "integer",
+                            "description": "时间分表的表数量",
+                            "example": 3
+                          }
+                        }
+                      },
+                      "tables_with_parsing": {
+                        "type": "integer",
+                        "description": "需要表名解析的表数量（包含@符号）",
+                        "example": 10
+                      },
+                      "tables_with_partition": {
+                        "type": "integer",
+                        "description": "检测到分表规则的表数量",
+                        "example": 7
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     },
     "responses": {

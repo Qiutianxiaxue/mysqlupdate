@@ -26,4 +26,10 @@ router.post("/tables", schemaDetectionController.getBaseTables);
 // 获取指定表的详细结构信息
 router.post("/table/info", schemaDetectionController.getTableInfo);
 
+// 预览表名解析和分表类型检测结果
+router.get(
+  "/preview-partition",
+  schemaDetectionController.previewPartitionDetection
+);
+
 export default router;

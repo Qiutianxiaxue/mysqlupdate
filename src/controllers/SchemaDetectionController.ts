@@ -375,4 +375,95 @@ export class SchemaDetectionController {
       });
     }
   };
+
+  /**
+   * 预览表名解析和分表类型检测结果
+   * GET /api/schema-detection/preview-partition
+   */
+  previewPartitionDetection = async (
+    req: Request,
+    res: Response
+  ): Promise<void> => {
+    try {
+      logger.info("开始预览表名解析和分表类型检测结果");
+
+      const schemaDetectionService = new SchemaDetectionService();
+
+      // 获取基准数据库中的所有表名
+      const query = `
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+      `;
+
+      const tables = (await baseSequelize.query(query, {
+        type: QueryTypes.SELECT,
+      })) as Array<{ TABLE_NAME: string }>;
+
+      const tableNames = tables.map((row) => row.TABLE_NAME);
+
+      // 解析和检测每个表
+      const results = tableNames.map((fullTableName) => {
+        // 解析表名
+        const parsed =
+          schemaDetectionService.parseTableNamePublic(fullTableName);
+
+        // 检测分表类型
+        const partitionInfo = schemaDetectionService.detectPartitionTypePublic(
+          parsed.tableName
+        );
+
+        return {
+          original_table_name: fullTableName,
+          parsed_table_name: parsed.tableName,
+          clean_table_name: partitionInfo.cleanTableName,
+          database_type: parsed.databaseType,
+          partition_type: partitionInfo.partition_type,
+          time_interval: partitionInfo.time_interval,
+          time_format: partitionInfo.time_format,
+          has_parsing: fullTableName !== parsed.tableName,
+          has_partition: partitionInfo.partition_type !== "none",
+          has_rule_removal: parsed.tableName !== partitionInfo.cleanTableName,
+        };
+      });
+
+      // 统计信息
+      const summary = {
+        total_tables: results.length,
+        by_database_type: {
+          main: results.filter((r) => r.database_type === "main").length,
+          log: results.filter((r) => r.database_type === "log").length,
+          order: results.filter((r) => r.database_type === "order").length,
+          static: results.filter((r) => r.database_type === "static").length,
+        },
+        by_partition_type: {
+          none: results.filter((r) => r.partition_type === "none").length,
+          store: results.filter((r) => r.partition_type === "store").length,
+          time: results.filter((r) => r.partition_type === "time").length,
+        },
+        tables_with_parsing: results.filter((r) => r.has_parsing).length,
+        tables_with_partition: results.filter((r) => r.has_partition).length,
+      };
+
+      await schemaDetectionService.close();
+
+      res.json({
+        success: true,
+        message: `预览了 ${tableNames.length} 个表的解析和检测结果`,
+        data: {
+          detection_results: results,
+          summary: summary,
+        },
+      });
+    } catch (error) {
+      logger.error("预览表名解析和分表类型检测失败:", error);
+      res.status(500).json({
+        success: false,
+        message: "预览表名解析和分表类型检测失败",
+        error: error instanceof Error ? error.message : "未知错误",
+      });
+    }
+  };
 }

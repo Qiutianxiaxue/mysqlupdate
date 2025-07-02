@@ -179,6 +179,30 @@ export class SchemaDetectionService {
         };
       } = {};
 
+      // 先解析所有基准库表名，按数据库类型分组
+      const tablesByDbType: Record<
+        "main" | "log" | "order" | "static",
+        string[]
+      > = {
+        main: [],
+        log: [],
+        order: [],
+        static: [],
+      };
+
+      // 解析基准库中的所有表名
+      for (const fullTableName of baseDbTables) {
+        const parsed = this.parseTableName(fullTableName);
+        tablesByDbType[parsed.databaseType].push(fullTableName);
+      }
+
+      logger.info(`基准库表分布统计:`);
+      for (const [dbType, tables] of Object.entries(tablesByDbType)) {
+        if (tables) {
+          logger.info(`  - ${dbType}: ${tables.length} 个表`);
+        }
+      }
+
       // 按数据库类型检测
       for (const databaseType of databaseTypes) {
         logger.info(`检测 ${databaseType} 数据库类型...`);
@@ -187,10 +211,13 @@ export class SchemaDetectionService {
           (s) => s.database_type === databaseType
         );
 
+        // 只检查属于当前数据库类型的表
+        const relevantBaseTables = tablesByDbType[databaseType] || [];
+
         // 分析表的状态，考虑分区配置
         const { newTables, deletedTables, existingTables } =
           await this.analyzeTablesWithPartition(
-            baseDbTables,
+            relevantBaseTables,
             typeSchemaDefinitions
           );
 
@@ -203,8 +230,10 @@ export class SchemaDetectionService {
         // 1. 检测现有表的结构变化
         for (const tableName of existingTables) {
           try {
+            // 解析表名获取真实表名进行检测
+            const parsed = this.parseTableName(tableName);
             const change = await this.detectTableChanges(
-              tableName,
+              parsed.tableName,
               databaseType
             );
             if (change) {
@@ -219,20 +248,18 @@ export class SchemaDetectionService {
           }
         }
 
-        // 2. 为新表生成schema定义（只对main类型创建新表定义）
-        if (databaseType === "main") {
-          for (const tableName of newTables) {
-            try {
-              const newTableChange = await this.generateNewTableSchema(
-                tableName,
-                databaseType
-              );
-              if (newTableChange) {
-                typeResults.push(newTableChange);
-              }
-            } catch (error) {
-              logger.error(`为新表 ${tableName} 生成schema时出错:`, error);
+        // 2. 为新表生成schema定义
+        for (const tableName of newTables) {
+          try {
+            const newTableChange = await this.generateNewTableSchema(
+              tableName,
+              databaseType
+            );
+            if (newTableChange) {
+              typeResults.push(newTableChange);
             }
+          } catch (error) {
+            logger.error(`为新表 ${tableName} 生成schema时出错:`, error);
           }
         }
 
@@ -263,15 +290,13 @@ export class SchemaDetectionService {
 
         // 汇总本类型的结果
         allResults.push(...typeResults);
-        if (databaseType === "main") {
-          allNewTables.push(...newTables);
-        }
+        allNewTables.push(...newTables);
         allDeletedTables.push(...actualDeletedTables); // 使用实际生成删除配置的表
 
         byDatabaseType[databaseType] = {
-          checked: baseDbTables.length + deletedTables.length,
+          checked: relevantBaseTables.length + deletedTables.length,
           changes: typeResults.length,
-          new_tables: databaseType === "main" ? newTables.length : 0,
+          new_tables: newTables.length,
           deleted_tables: actualDeletedTables.length, // 使用实际生成删除配置的表数量
         };
       }
@@ -307,37 +332,71 @@ export class SchemaDetectionService {
    * 为新表生成schema定义
    */
   private async generateNewTableSchema(
-    tableName: string,
+    originalTableName: string,
     databaseType: "main" | "log" | "order" | "static"
   ): Promise<TableSchemaChange | null> {
     try {
-      logger.info(`为新表 ${tableName} 生成schema定义`);
+      logger.info(`为新表 ${originalTableName} 生成schema定义`);
 
-      // 获取表结构信息
-      const tableInfo = await this.getCurrentTableInfo(tableName);
+      // 解析表名和数据库类型
+      const parsed = this.parseTableName(originalTableName);
+      const actualTableName = parsed.tableName;
+      const actualDatabaseType = parsed.databaseType;
+
+      // 如果解析出的数据库类型与传入的类型不同，优先使用解析出的类型，否则使用传入的类型
+      const finalDatabaseType = originalTableName.includes("@")
+        ? actualDatabaseType
+        : databaseType;
+
+      // 获取表结构信息（使用原始表名查询基准库）
+      const tableInfo = await this.getCurrentTableInfo(originalTableName);
       if (!tableInfo) {
-        logger.warn(`无法获取表 ${tableName} 的结构信息`);
+        logger.warn(`无法获取表 ${originalTableName} 的结构信息`);
         return null;
       }
 
-      // 生成schema定义
-      const schemaDefinition = this.generateSchemaDefinition(tableInfo);
+      // 生成schema定义（使用解析后的表名）
+      const schemaDefinition = this.generateSchemaDefinition({
+        ...tableInfo,
+        tableName: actualTableName,
+      });
+
+      // 检测分表类型
+      const partitionInfo = this.detectPartitionFromTableName(actualTableName);
+      const finalTableName = partitionInfo.cleanTableName; // 使用清理后的表名
 
       const result: TableSchemaChange = {
-        table_name: tableName,
-        database_type: databaseType,
-        partition_type: "none", // 新表默认不分区
+        table_name: finalTableName, // 使用清理后的表名
+        database_type: finalDatabaseType,
+        partition_type: partitionInfo.partition_type,
         current_version: null, // 新表没有当前版本
         new_version: "1.0.0", // 新表从1.0.0开始
         schema_definition: JSON.stringify(schemaDefinition),
         changes_detected: ["新表创建"],
-        upgrade_notes: `从基准数据库检测到的新表: ${tableName}`,
+        upgrade_notes: this.buildDetailedUpgradeNotes(
+          originalTableName,
+          finalTableName,
+          finalDatabaseType,
+          partitionInfo
+        ),
       };
 
-      logger.info(`成功为新表 ${tableName} 生成schema定义`);
+      // 如果检测到时间分区，添加时间分区相关配置
+      if (partitionInfo.partition_type === "time") {
+        if (partitionInfo.time_interval) {
+          result.time_interval = partitionInfo.time_interval;
+        }
+        if (partitionInfo.time_format) {
+          result.time_format = partitionInfo.time_format;
+        }
+      }
+
+      logger.info(
+        `成功为新表 ${originalTableName} 生成schema定义 - 最终表名: ${finalTableName}, 数据库类型: ${finalDatabaseType}, 分表类型: ${partitionInfo.partition_type}`
+      );
       return result;
     } catch (error) {
-      logger.error(`为新表 ${tableName} 生成schema定义失败:`, error);
+      logger.error(`为新表 ${originalTableName} 生成schema定义失败:`, error);
       throw error;
     }
   }
@@ -1261,6 +1320,167 @@ export class SchemaDetectionService {
    * 关闭连接
    */
   async close(): Promise<void> {
-    await this.connectionManager.closeAllConnections();
+    if (this.connectionManager) {
+      await this.connectionManager.closeAllConnections();
+    }
+  }
+
+  /**
+   * 解析表名，支持@符号分割数据库类型
+   * 格式: table_name@database_type
+   * @符号后只能是log/order/static，其他一律对应main数据库
+   */
+  private parseTableName(fullTableName: string): {
+    tableName: string;
+    databaseType: "main" | "log" | "order" | "static";
+  } {
+    if (fullTableName.includes("@")) {
+      const parts = fullTableName.split("@");
+      const tableName = parts[0] || "";
+      const dbType = parts[1] || "";
+      const validTypes = ["log", "order", "static"];
+      const databaseType = validTypes.includes(dbType) ? dbType : "main";
+
+      logger.debug(
+        `解析表名: ${fullTableName} -> 表名: ${tableName}, 数据库类型: ${databaseType}`
+      );
+      return {
+        tableName: tableName.trim(),
+        databaseType: databaseType as "main" | "log" | "order" | "static",
+      };
+    }
+
+    return { tableName: fullTableName, databaseType: "main" };
+  }
+
+  /**
+   * 基于表名后缀检测分表类型并返回清理后的表名
+   * 规则：
+   * - #store: 按门店分表
+   * - #time_day: 按天分表
+   * - #time_month: 按月分表
+   * - #time_year: 按年分表
+   */
+  private detectPartitionFromTableName(tableName: string): {
+    cleanTableName: string;
+    partition_type: "store" | "time" | "none";
+    time_interval?: "day" | "month" | "year";
+    time_format?: string;
+  } {
+    logger.debug(`检测表 ${tableName} 的分表类型...`);
+
+    // 检测门店分表
+    if (tableName.includes("#store")) {
+      const cleanTableName = tableName.replace("#store", "");
+      logger.info(
+        `表 ${tableName} 检测为门店分表，清理后表名: ${cleanTableName}`
+      );
+      return {
+        cleanTableName,
+        partition_type: "store",
+      };
+    }
+
+    // 检测时间分表
+    if (tableName.includes("#time_day")) {
+      const cleanTableName = tableName.replace("#time_day", "");
+      logger.info(
+        `表 ${tableName} 检测为按天时间分表，清理后表名: ${cleanTableName}`
+      );
+      return {
+        cleanTableName,
+        partition_type: "time",
+        time_interval: "day",
+        time_format: "YYYYMMDD",
+      };
+    }
+
+    if (tableName.includes("#time_month")) {
+      const cleanTableName = tableName.replace("#time_month", "");
+      logger.info(
+        `表 ${tableName} 检测为按月时间分表，清理后表名: ${cleanTableName}`
+      );
+      return {
+        cleanTableName,
+        partition_type: "time",
+        time_interval: "month",
+        time_format: "YYYYMM",
+      };
+    }
+
+    if (tableName.includes("#time_year")) {
+      const cleanTableName = tableName.replace("#time_year", "");
+      logger.info(
+        `表 ${tableName} 检测为按年时间分表，清理后表名: ${cleanTableName}`
+      );
+      return {
+        cleanTableName,
+        partition_type: "time",
+        time_interval: "year",
+        time_format: "YYYY",
+      };
+    }
+
+    logger.debug(`表 ${tableName} 检测为普通表（无分表）`);
+    return {
+      cleanTableName: tableName,
+      partition_type: "none",
+    };
+  }
+
+  /**
+   * 构建详细的升级说明
+   */
+  private buildDetailedUpgradeNotes(
+    originalTableName: string,
+    parsedTableName: string,
+    databaseType: string,
+    partitionInfo: any
+  ): string {
+    let notes = `从基准数据库检测到的新表`;
+
+    if (originalTableName !== parsedTableName) {
+      notes += `\n原始表名: ${originalTableName}`;
+      notes += `\n解析表名: ${parsedTableName}`;
+    } else {
+      notes += `: ${parsedTableName}`;
+    }
+
+    notes += `\n数据库类型: ${databaseType}`;
+
+    if (partitionInfo.partition_type !== "none") {
+      notes += `\n分表类型: ${partitionInfo.partition_type}`;
+
+      if (partitionInfo.partition_type === "time") {
+        notes += `\n时间间隔: ${partitionInfo.time_interval}`;
+        notes += `\n时间格式: ${partitionInfo.time_format}`;
+      }
+
+      notes += `\n✅ 自动检测结果（基于表名后缀）`;
+    }
+
+    return notes;
+  }
+
+  /**
+   * 公开的表名解析方法
+   */
+  public parseTableNamePublic(fullTableName: string): {
+    tableName: string;
+    databaseType: "main" | "log" | "order" | "static";
+  } {
+    return this.parseTableName(fullTableName);
+  }
+
+  /**
+   * 公开的分表类型检测方法
+   */
+  public detectPartitionTypePublic(tableName: string): {
+    cleanTableName: string;
+    partition_type: "store" | "time" | "none";
+    time_interval?: "day" | "month" | "year";
+    time_format?: string;
+  } {
+    return this.detectPartitionFromTableName(tableName);
   }
 }
