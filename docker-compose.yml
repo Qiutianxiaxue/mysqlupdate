@@ -73,11 +73,11 @@ services:
     container_name: mysqlupdate-app
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "${APP_PORT:-33000}:33000"
     environment:
       # 应用配置
       NODE_ENV: ${NODE_ENV:-production}
-      PORT: 3000
+      PORT: 33000
 
       # 主数据库配置
       DB_HOST: mysql
