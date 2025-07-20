@@ -338,9 +338,9 @@ export class SchemaDetectionService {
     try {
       logger.info(`为新表 ${originalTableName} 生成schema定义`);
 
-      // 解析表名和数据库类型
+      // 解析表名和数据库类型（parseTableName已经移除了分表规则）
       const parsed = this.parseTableName(originalTableName);
-      const actualTableName = parsed.tableName;
+      const cleanTableName = parsed.tableName; // 这已经是清理后的表名
       const actualDatabaseType = parsed.databaseType;
 
       // 如果解析出的数据库类型与传入的类型不同，优先使用解析出的类型，否则使用传入的类型
@@ -355,18 +355,17 @@ export class SchemaDetectionService {
         return null;
       }
 
-      // 生成schema定义（使用解析后的表名）
+      // 生成schema定义（使用清理后的表名）
       const schemaDefinition = this.generateSchemaDefinition({
         ...tableInfo,
-        tableName: actualTableName,
+        tableName: cleanTableName,
       });
 
-      // 检测分表类型
-      const partitionInfo = this.detectPartitionFromTableName(actualTableName);
-      const finalTableName = partitionInfo.cleanTableName; // 使用清理后的表名
+      // 检测分表类型（使用原始表名来检测分表规则）
+      const partitionInfo = this.detectPartitionFromTableName(originalTableName);
 
       const result: TableSchemaChange = {
-        table_name: finalTableName, // 使用清理后的表名
+        table_name: cleanTableName, // 使用清理后的表名
         database_type: finalDatabaseType,
         partition_type: partitionInfo.partition_type,
         current_version: null, // 新表没有当前版本
@@ -375,7 +374,7 @@ export class SchemaDetectionService {
         changes_detected: ["新表创建"],
         upgrade_notes: this.buildDetailedUpgradeNotes(
           originalTableName,
-          finalTableName,
+          cleanTableName,
           finalDatabaseType,
           partitionInfo
         ),
@@ -392,7 +391,7 @@ export class SchemaDetectionService {
       }
 
       logger.info(
-        `成功为新表 ${originalTableName} 生成schema定义 - 最终表名: ${finalTableName}, 数据库类型: ${finalDatabaseType}, 分表类型: ${partitionInfo.partition_type}`
+        `成功为新表 ${originalTableName} 生成schema定义 - 最终表名: ${cleanTableName}, 数据库类型: ${finalDatabaseType}, 分表类型: ${partitionInfo.partition_type}`
       );
       return result;
     } catch (error) {
@@ -1326,31 +1325,42 @@ export class SchemaDetectionService {
   }
 
   /**
-   * 解析表名，支持@符号分割数据库类型
-   * 格式: table_name@database_type
+   * 解析表名，支持@符号分割数据库类型和#符号分割分表规则
+   * 格式: table_name#partition_rule@database_type
    * @符号后只能是log/order/static，其他一律对应main数据库
+   * #符号后表示分表规则，需要从表名中移除
    */
   private parseTableName(fullTableName: string): {
     tableName: string;
     databaseType: "main" | "log" | "order" | "static";
   } {
-    if (fullTableName.includes("@")) {
-      const parts = fullTableName.split("@");
-      const tableName = parts[0] || "";
+    let workingName = fullTableName;
+    let databaseType: "main" | "log" | "order" | "static" = "main";
+
+    // 1. 首先解析数据库类型（@符号）
+    if (workingName.includes("@")) {
+      const parts = workingName.split("@");
+      workingName = parts[0] || "";
       const dbType = parts[1] || "";
       const validTypes = ["log", "order", "static"];
-      const databaseType = validTypes.includes(dbType) ? dbType : "main";
-
-      logger.debug(
-        `解析表名: ${fullTableName} -> 表名: ${tableName}, 数据库类型: ${databaseType}`
-      );
-      return {
-        tableName: tableName.trim(),
-        databaseType: databaseType as "main" | "log" | "order" | "static",
-      };
+      databaseType = validTypes.includes(dbType) ? (dbType as "main" | "log" | "order" | "static") : "main";
     }
 
-    return { tableName: fullTableName, databaseType: "main" };
+    // 2. 然后移除分表规则（#符号）
+    let tableName = workingName;
+    if (workingName.includes("#")) {
+      const parts = workingName.split("#");
+      tableName = parts[0] || "";
+    }
+
+    logger.debug(
+      `解析表名: ${fullTableName} -> 表名: ${tableName}, 数据库类型: ${databaseType}`
+    );
+    
+    return {
+      tableName: tableName.trim(),
+      databaseType: databaseType,
+    };
   }
 
   /**
@@ -1360,6 +1370,7 @@ export class SchemaDetectionService {
    * - #time_day: 按天分表
    * - #time_month: 按月分表
    * - #time_year: 按年分表
+   * 注意：需要先移除@database_type部分
    */
   private detectPartitionFromTableName(tableName: string): {
     cleanTableName: string;
@@ -1369,9 +1380,15 @@ export class SchemaDetectionService {
   } {
     logger.debug(`检测表 ${tableName} 的分表类型...`);
 
+    // 先移除@database_type部分，只分析表名和分表规则
+    let workingName = tableName;
+    if (workingName.includes("@")) {
+      workingName = workingName.split("@")[0] || "";
+    }
+
     // 检测门店分表
-    if (tableName.includes("#store")) {
-      const cleanTableName = tableName.replace("#store", "");
+    if (workingName.includes("#store")) {
+      const cleanTableName = workingName.replace("#store", "");
       logger.info(
         `表 ${tableName} 检测为门店分表，清理后表名: ${cleanTableName}`
       );
@@ -1382,8 +1399,8 @@ export class SchemaDetectionService {
     }
 
     // 检测时间分表
-    if (tableName.includes("#time_day")) {
-      const cleanTableName = tableName.replace("#time_day", "");
+    if (workingName.includes("#time_day")) {
+      const cleanTableName = workingName.replace("#time_day", "");
       logger.info(
         `表 ${tableName} 检测为按天时间分表，清理后表名: ${cleanTableName}`
       );
@@ -1395,8 +1412,8 @@ export class SchemaDetectionService {
       };
     }
 
-    if (tableName.includes("#time_month")) {
-      const cleanTableName = tableName.replace("#time_month", "");
+    if (workingName.includes("#time_month")) {
+      const cleanTableName = workingName.replace("#time_month", "");
       logger.info(
         `表 ${tableName} 检测为按月时间分表，清理后表名: ${cleanTableName}`
       );
@@ -1408,8 +1425,8 @@ export class SchemaDetectionService {
       };
     }
 
-    if (tableName.includes("#time_year")) {
-      const cleanTableName = tableName.replace("#time_year", "");
+    if (workingName.includes("#time_year")) {
+      const cleanTableName = workingName.replace("#time_year", "");
       logger.info(
         `表 ${tableName} 检测为按年时间分表，清理后表名: ${cleanTableName}`
       );
@@ -1423,7 +1440,7 @@ export class SchemaDetectionService {
 
     logger.debug(`表 ${tableName} 检测为普通表（无分表）`);
     return {
-      cleanTableName: tableName,
+      cleanTableName: workingName,
       partition_type: "none",
     };
   }

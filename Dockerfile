@@ -4,6 +4,9 @@ FROM node:20-alpine
 # 设置工作目录
 WORKDIR /app
 
+# 设置npm配置为淘宝镜像
+RUN npm config set registry https://registry.npmmirror.com
+
 # 安装系统依赖
 RUN apk add --no-cache \
     tzdata \
@@ -13,23 +16,17 @@ RUN apk add --no-cache \
 
 # 复制package.json和package-lock.json（如果存在）
 COPY package*.json ./
+# 复制环境变量文件
+COPY .env ./
 
-# 安装项目依赖
-RUN npm ci --only=production
+# 安装项目依赖（包含开发依赖用于构建）
+RUN npm install
 
 # 复制项目源码
 COPY . .
 
 # 编译TypeScript
 RUN npm run build
-
-# 创建非root用户
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nextjs -u 1001
-
-# 更改文件所有权
-RUN chown -R nextjs:nodejs /app
-USER nextjs
 
 # 暴露端口
 EXPOSE 33000
