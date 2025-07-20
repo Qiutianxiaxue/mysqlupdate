@@ -2,9 +2,9 @@ version: "3.8"
 
 services:
   # Node.js应用服务
-  app:
+  mysqlupdate-task:
     build: .
-    container_name: mysqlupdate-app
+    container_name: mysqlupdate-task
     restart: unless-stopped
     ports:
       - "${PORT:-33000}:${PORT:-33000}"
