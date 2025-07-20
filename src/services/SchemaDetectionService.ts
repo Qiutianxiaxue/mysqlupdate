@@ -895,8 +895,6 @@ export class SchemaDetectionService {
     );
 
     if (expectedPrimaryKeyColumn) {
-      logger.info(`✅ 找到符合命名规范的主键字段: ${expectedPrimaryKeyName}`);
-
       // 3. 验证该字段是否适合作为主键（通常应该是INT类型且自增）
       const isAutoIncrement =
         expectedPrimaryKeyColumn.extra?.includes("auto_increment") || false;
@@ -946,7 +944,6 @@ export class SchemaDetectionService {
     );
 
     if (idColumns.length === 1 && idColumns[0]) {
-      logger.info(`✅ 找到包含ID的主键字段: ${idColumns[0].column_name}`);
       return idColumns[0].column_name;
     }
 
@@ -1488,8 +1485,6 @@ export class SchemaDetectionService {
 
         logger.info(`保存表 ${change.table_name} 新版本 ${change.new_version}`);
       }
-
-      logger.info("所有表结构变化保存完成");
     } catch (error) {
       logger.error("保存表结构变化失败:", error);
       throw error;

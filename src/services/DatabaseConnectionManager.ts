@@ -109,8 +109,6 @@ export class DatabaseConnectionManager {
           `CREATE DATABASE \`${config.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
         );
         logger.info(`数据库 ${config.database} 创建成功`);
-      } else {
-        logger.info(`数据库 ${config.database} 已存在`);
       }
 
       await adminConnection.close();
@@ -172,10 +170,7 @@ export class DatabaseConnectionManager {
     try {
       // 测试连接
       await connection.authenticate();
-      logger.info(
-        `成功连接到企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 的 ${databaseType} 数据库: ${config.database}`
-      );
-
+      
       // 存储连接
       this.connections.set(connectionKey, connection);
       return connection;
@@ -197,7 +192,6 @@ export class DatabaseConnectionManager {
     );
     await Promise.all(closePromises);
     this.connections.clear();
-    logger.info("所有数据库连接已关闭");
   }
 
   /**
@@ -215,8 +209,6 @@ export class DatabaseConnectionManager {
         this.connections.delete(key);
       }
     }
-
-    logger.info(`企业 ${enterpriseId} 的所有数据库连接已关闭`);
   }
 
   /**

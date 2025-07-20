@@ -101,7 +101,6 @@ export class DatabaseMigrationService {
 
     try {
       await connection.query(sqlStatement);
-      logger.info(`SQL执行成功: ${sqlStatement.substring(0, 100)}...`);
     } catch (error) {
       executionStatus = "FAILED";
       errorMessage = error instanceof Error ? error.message : "未知错误";
@@ -430,7 +429,6 @@ export class DatabaseMigrationService {
       if (tableDefinition.action === "DROP") {
         logger.info(`🗑️ 执行删除表操作: ${tableName}`);
         await this.dropTableWithConnection(connection, tableName);
-        logger.info(`🎉 表 ${tableName} 删除完成`);
         // 记录删除操作的版本
         if (schema) {
           await MigrationVersionService.recordMigrationVersion(
@@ -451,7 +449,6 @@ export class DatabaseMigrationService {
       );
 
       if (tableExists) {
-        logger.info(`✅ 表 ${tableName} 已存在，执行升级操作`);
         await this.upgradeTableWithConnection(
           connection,
           tableName,
@@ -477,7 +474,6 @@ export class DatabaseMigrationService {
         );
       }
 
-      logger.info(`🎉 表 ${tableName} 迁移完成`);
     } catch (error) {
       logger.error(
         `❌ 迁移表 ${tableDefinition.tableName} (最终表名: ${this.getTableName(
@@ -563,7 +559,6 @@ export class DatabaseMigrationService {
 
       logger.info(`   - 找到 ${stores.length} 个门店，开始创建分表`);
 
-      let createdCount = 0;
       for (const store of stores) {
         const storeId = store.store_id || store.id;
         await this.migrateTableWithConnection(
@@ -573,7 +568,6 @@ export class DatabaseMigrationService {
           schema
         );
 
-        createdCount++;
         logger.info(
           `   ✅ 已创建门店分表: ${
             tableDefinition.tableName
@@ -581,7 +575,6 @@ export class DatabaseMigrationService {
         );
       }
 
-      logger.info(`   🎉 门店分表创建完成，共创建 ${createdCount} 个门店分表`);
     } catch (error) {
       logger.error(`门店分表迁移失败:`, error);
       throw error;
@@ -625,7 +618,6 @@ export class DatabaseMigrationService {
     schema?: TableSchema
   ): Promise<void> {
     const currentDate = new Date(startDate);
-    let createdCount = 0;
 
     // 修改循环条件：确保至少执行一次，即使开始时间和结束时间相同
     do {
@@ -641,11 +633,6 @@ export class DatabaseMigrationService {
         schema
       );
 
-      createdCount++;
-      logger.info(
-        `   ✅ 已创建分区表: ${tableDefinition.tableName}${timeSuffix}`
-      );
-
       // 移动到下一个时间间隔
       if (interval === "day") {
         currentDate.setDate(currentDate.getDate() + 1);
@@ -655,8 +642,6 @@ export class DatabaseMigrationService {
         currentDate.setFullYear(currentDate.getFullYear() + 1);
       }
     } while (currentDate <= endDate);
-
-    logger.info(`   🎉 时间分区表创建完成，共创建 ${createdCount} 个分区表`);
   }
 
   /**
@@ -811,8 +796,6 @@ export class DatabaseMigrationService {
         // 向后兼容，直接执行SQL
         await connection.query(createTableSQL);
       }
-
-      logger.info(`创建表 ${tableName} 成功`);
     } catch (error) {
       logger.error(`创建表 ${tableName} 失败:`, error);
       throw error;
@@ -917,8 +900,6 @@ export class DatabaseMigrationService {
           tableDefinition.indexes || [],
           tableDefinition
         );
-
-        logger.info(`✅ 表 ${tableName} 升级完成`);
       } catch (columnQueryError) {
         logger.error(`查询表 ${tableName} 的列信息失败:`, columnQueryError);
 
@@ -960,8 +941,6 @@ export class DatabaseMigrationService {
                 ? commentInfo.COLUMN_COMMENT
                 : "";
             }
-
-            logger.info(`成功获取并合并comment信息`);
           } catch (commentError) {
             logger.warn(
               `获取comment信息失败，将跳过comment更新:`,
@@ -1070,8 +1049,6 @@ export class DatabaseMigrationService {
           } else {
             await connection.query(dropSQL);
           }
-
-          logger.info(`✅ 成功删除列: ${columnName}`);
         } catch (error) {
           logger.error(`❌ 删除列 ${columnName} 失败:`, error);
           // 删除列失败不中断迁移，继续处理其他列
@@ -1317,7 +1294,6 @@ export class DatabaseMigrationService {
             await connection.query(alterSQL);
           }
 
-          logger.info(`✅ 成功更新列 ${columnName} 的属性`);
         } catch (error) {
           logger.error(`❌ 更新列 ${columnName} 属性失败:`, error);
           // 更新列属性失败不中断迁移，继续处理其他列
@@ -1364,7 +1340,6 @@ export class DatabaseMigrationService {
           await connection.query(dropPrimaryKeySQL);
         }
 
-        logger.info(`✅ 成功移除主键约束`);
       } else if (!currentIsPrimaryKey && expectedIsPrimaryKey) {
         // 添加主键
         logger.info(`🔄 为表 ${tableName} 列 ${columnName} 添加主键约束`);
@@ -1385,8 +1360,6 @@ export class DatabaseMigrationService {
         } else {
           await connection.query(addPrimaryKeySQL);
         }
-
-        logger.info(`✅ 成功添加主键约束`);
       }
     } catch (error) {
       logger.error(`❌ 处理主键变更失败:`, error);
@@ -1707,7 +1680,6 @@ export class DatabaseMigrationService {
               await connection.query(dropSQL);
             }
 
-            logger.info(`✅ 成功删除索引: ${existingIndexName}`);
           } catch (error) {
             logger.error(`❌ 删除索引 ${existingIndexName} 失败:`, error);
             // 删除索引失败不中断迁移
@@ -1748,8 +1720,6 @@ export class DatabaseMigrationService {
             } else {
               await connection.query(sql);
             }
-
-            logger.info(`✅ 成功创建索引: ${index.name}`);
           } catch (indexError) {
             logger.warn(`⚠️ 创建索引 ${index.name} 失败:`, indexError);
 
@@ -1768,8 +1738,6 @@ export class DatabaseMigrationService {
           logger.info(`✓ 索引 ${index.name} 已存在，跳过创建`);
         }
       }
-
-      logger.info(`✅ 表 ${tableName} 索引同步完成`);
     } catch (error) {
       logger.error(`同步表 ${tableName} 索引时出错:`, error);
       logger.warn(`⚠️ 索引同步失败，但表迁移继续进行`);
@@ -1980,8 +1948,6 @@ export class DatabaseMigrationService {
           await connection.query(modifyAutoIncSQL);
         }
       }
-
-      logger.info(`为表 ${tableName} 添加列 ${column.name} 成功`);
     } catch (error) {
       logger.error(`为表 ${tableName} 添加列 ${column.name} 失败:`, error);
       // 检查是否是列已存在的错误
@@ -2239,8 +2205,6 @@ export class DatabaseMigrationService {
       } else {
         await connection.query(dropSQL);
       }
-
-      logger.info(`✅ 表 ${tableName} 删除成功`);
     } catch (error) {
       logger.error(`删除表 ${tableName} 失败:`, error);
       throw error;
@@ -2381,7 +2345,6 @@ export class DatabaseMigrationService {
               "1.0.0"
             );
             droppedTables.push(table);
-            logger.info(`✅ 成功删除门店分表: ${table}`);
           } catch (error) {
             const errorMsg = `删除门店分表 ${table} 失败: ${
               error instanceof Error ? error.message : "未知错误"
@@ -2410,7 +2373,6 @@ export class DatabaseMigrationService {
                 "1.0.0"
               );
               droppedTables.push(table);
-              logger.info(`✅ 成功删除时间分表: ${table}`);
             } catch (error) {
               const errorMsg = `删除时间分表 ${table} 失败: ${
                 error instanceof Error ? error.message : "未知错误"
@@ -2437,7 +2399,6 @@ export class DatabaseMigrationService {
               "1.0.0"
             );
             droppedTables.push(tableName);
-            logger.info(`✅ 成功删除表: ${tableName}`);
           } catch (error) {
             const errorMsg = `删除表 ${tableName} 失败: ${
               error instanceof Error ? error.message : "未知错误"
@@ -2530,8 +2491,6 @@ export class DatabaseMigrationService {
         "DROP",
         dropSQL
       );
-
-      logger.info(`✅ 表 ${tableName} 删除成功`);
     } catch (error) {
       logger.error(`删除表 ${tableName} 失败:`, error);
       throw error;

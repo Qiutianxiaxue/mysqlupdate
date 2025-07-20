@@ -100,10 +100,6 @@ export class MigrationLockService {
 
       await transaction.commit();
 
-      logger.info(
-        `🔒 成功获取迁移锁: ${lockKey}, 持有者: ${this.lockHolderInfo}`
-      );
-
       return {
         success: true,
         lock,
@@ -157,8 +153,6 @@ export class MigrationLockService {
       // 释放锁
       await lock.update({ is_active: false, update_time: new Date() });
 
-      logger.info(`🔓 成功释放迁移锁: ${lockKey}`);
-
       return {
         success: true,
         message: "成功释放迁移锁",
@@ -200,8 +194,6 @@ export class MigrationLockService {
           message: `锁不存在或已被释放: ${lockKey}`,
         };
       }
-
-      logger.info(`🔓 强制释放迁移锁: ${lockKey}`);
 
       return {
         success: true,
@@ -364,10 +356,6 @@ export class MigrationLockService {
 
       const cleanedCount = result[0];
 
-      if (cleanedCount > 0) {
-        logger.info(`🧹 清理了 ${cleanedCount} 个过期的迁移锁`);
-      }
-
       return {
         success: true,
         message: `成功清理 ${cleanedCount} 个过期的迁移锁`,
@@ -405,10 +393,6 @@ export class MigrationLockService {
       );
 
       const cleanedCount = result[0];
-
-      if (cleanedCount > 0) {
-        logger.info(`🧹 服务启动时清理了 ${cleanedCount} 个活跃的迁移锁`);
-      }
 
       return {
         success: true,

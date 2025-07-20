@@ -100,8 +100,6 @@ export class MigrationVersionService {
       await MigrationVersion.upsert(recordData, {
         conflictFields: ["table_name", "database_type", "partition_rule"],
       });
-
-      logger.info(`记录表 ${tableName} (${databaseType}, ${partitionRule}) 迁移版本: ${version}`);
     } catch (error) {
       logger.error(`记录表 ${tableName} (${databaseType}, ${partitionType}) 迁移版本失败:`, error);
       throw error;
