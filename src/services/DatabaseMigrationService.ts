@@ -3,6 +3,7 @@ import TableSchema from "@/models/TableSchema";
 import Enterprise from "@/models/Enterprise";
 import MigrationHistory from "@/models/MigrationHistory";
 import DatabaseConnectionManager from "./DatabaseConnectionManager";
+import MigrationVersionService from "./MigrationVersionService";
 import logger from "@/utils/logger";
 import { v4 as uuidv4 } from "uuid";
 import { QueryTypes } from "sequelize";
@@ -358,7 +359,8 @@ export class DatabaseMigrationService {
         await this.migrateStorePartitionedTable(
           connection,
           tableDefinition,
-          enterprise
+          enterprise,
+          schema
         );
       } else if (schema.partition_type === "time") {
         // 时间分表逻辑 - 使用配置的时间分区设置
@@ -369,7 +371,7 @@ export class DatabaseMigrationService {
           enterprise
         );
       } else {
-        await this.migrateTableWithConnection(connection, tableDefinition);
+        await this.migrateTableWithConnection(connection, tableDefinition, undefined, schema);
       }
 
       logger.info(
@@ -393,21 +395,52 @@ export class DatabaseMigrationService {
   private async migrateTableWithConnection(
     connection: Sequelize,
     tableDefinition: TableDefinition,
-    storeId?: string
+    storeId?: string,
+    schema?: TableSchema
   ): Promise<void> {
     try {
       const tableName = this.getTableName(tableDefinition.tableName, storeId);
+      
+      // 如果提供了schema信息，进行版本检查
+      if (schema) {
+        const needsMigration = await MigrationVersionService.shouldMigrate(
+          tableDefinition.tableName, // 使用原始表名（不带后缀）
+          schema.database_type,
+          schema.schema_version,
+          schema.partition_type,
+          schema.time_interval || undefined
+        );
+
+        if (!needsMigration) {
+          logger.info(`⏭️ 表 ${tableName} 已经是版本 ${schema.schema_version}，跳过迁移`);
+          return;
+        }
+      }
+
       logger.info(`🚀 开始迁移表:`);
       logger.info(`   - 原始表名: ${tableDefinition.tableName}`);
       logger.info(`   - 后缀ID: ${storeId || "none"}`);
       logger.info(`   - 最终表名: ${tableName}`);
       logger.info(`   - 迁移动作: ${tableDefinition.action || "自动检测"}`);
+      if (schema) {
+        logger.info(`   - 目标版本: ${schema.schema_version}`);
+      }
 
       // 检查是否是删除操作
       if (tableDefinition.action === "DROP") {
         logger.info(`🗑️ 执行删除表操作: ${tableName}`);
         await this.dropTableWithConnection(connection, tableName);
         logger.info(`🎉 表 ${tableName} 删除完成`);
+        // 记录删除操作的版本
+        if (schema) {
+          await MigrationVersionService.recordMigrationVersion(
+            tableDefinition.tableName,
+            schema.database_type,
+            schema.schema_version,
+            schema.partition_type,
+            schema.time_interval || undefined
+          );
+        }
         return;
       }
 
@@ -430,6 +463,17 @@ export class DatabaseMigrationService {
           connection,
           tableName,
           tableDefinition
+        );
+      }
+
+      // 记录成功的迁移版本
+      if (schema) {
+        await MigrationVersionService.recordMigrationVersion(
+          tableDefinition.tableName,
+          schema.database_type,
+          schema.schema_version,
+          schema.partition_type,
+          schema.time_interval || undefined
         );
       }
 
@@ -482,7 +526,8 @@ export class DatabaseMigrationService {
       startDate,
       endDate,
       interval,
-      schema.time_format
+      schema.time_format,
+      schema
     );
   }
 
@@ -492,7 +537,8 @@ export class DatabaseMigrationService {
   private async migrateStorePartitionedTable(
     connection: Sequelize,
     tableDefinition: TableDefinition,
-    enterprise: Enterprise
+    enterprise: Enterprise,
+    schema?: TableSchema
   ): Promise<void> {
     try {
       logger.info(`🏪 开始门店分表迁移:`);
@@ -523,7 +569,8 @@ export class DatabaseMigrationService {
         await this.migrateTableWithConnection(
           connection,
           tableDefinition,
-          storeId.toString()
+          storeId.toString(),
+          schema
         );
 
         createdCount++;
@@ -549,11 +596,11 @@ export class DatabaseMigrationService {
       // 尝试不同的门店表名
 
       const [results] = await connection.query(
-        `SELECT store_id,store_name FROM store WHERE status = 1`
+        `SELECT store_id,store_name FROM qc_store WHERE status = 1`
       );
 
       if (Array.isArray(results) && results.length > 0) {
-        logger.info(`   - 从表 store 查询到 ${results.length} 个门店`);
+        logger.info(`   - 从表 qc_store 查询到 ${results.length} 个门店`);
         return results;
       }
 
@@ -574,7 +621,8 @@ export class DatabaseMigrationService {
     startDate: Date,
     endDate: Date,
     interval: "day" | "month" | "year",
-    timeFormat?: string
+    timeFormat?: string,
+    schema?: TableSchema
   ): Promise<void> {
     const currentDate = new Date(startDate);
     let createdCount = 0;
@@ -589,7 +637,8 @@ export class DatabaseMigrationService {
       await this.migrateTableWithConnection(
         connection,
         tableDefinition,
-        timeSuffix
+        timeSuffix,
+        schema
       );
 
       createdCount++;
@@ -2692,7 +2741,8 @@ export class DatabaseMigrationService {
       await this.migrateTableWithConnection(
         connection,
         tableDefinition,
-        storeId
+        storeId,
+        schema
       );
 
       logger.info(

@@ -5,8 +5,10 @@ import morgan from "morgan";
 import dotenv from "dotenv";
 import migrationRoutes from "@/routes/migration";
 import schemaDetectionRoutes from "@/routes/schemaDetection";
+import migrationVersionRoutes from "@/routes/migrationVersion";
 import { syncDatabase } from "@/models";
 import { testBaseConnection, getBaseDatabaseInfo } from "@/config/baseDatabase";
+import { MigrationLockService } from "@/services/MigrationLockService";
 import logger from "@/utils/logger";
 
 dotenv.config();
@@ -24,6 +26,7 @@ app.use(express.urlencoded({ extended: true }));
 // 路由
 app.use("/api/migration", migrationRoutes);
 app.use("/api/schema-detection", schemaDetectionRoutes);
+app.use("/api/migration-version", migrationVersionRoutes);
 
 // 健康检查
 app.get("/health", (req, res) => {
@@ -43,6 +46,7 @@ app.get("/", (req, res) => {
       health: "/health",
       migration: "/api/migration",
       schemaDetection: "/api/schema-detection",
+      migrationVersion: "/api/migration-version",
     },
   });
 });
@@ -76,6 +80,16 @@ export const startServer = async () => {
   try {
     // 同步主数据库
     await syncDatabase();
+
+    // 清理之前服务留下的所有迁移锁
+    logger.info("正在清理之前的迁移锁...");
+    const lockService = MigrationLockService.getInstance();
+    const cleanupResult = await lockService.cleanupAllLocks();
+    if (cleanupResult.cleanedCount > 0) {
+      logger.info(`已清理 ${cleanupResult.cleanedCount} 个过期的迁移锁`);
+    } else {
+      logger.info("没有发现需要清理的迁移锁");
+    }
 
     // 测试基准数据库连接
     await testBaseConnection();

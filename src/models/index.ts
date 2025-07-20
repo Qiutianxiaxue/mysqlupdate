@@ -3,6 +3,7 @@ import TableSchema from "./TableSchema";
 import Enterprise from "./Enterprise";
 import MigrationHistory from "./MigrationHistory";
 import MigrationLock from "./MigrationLock";
+import MigrationVersion from "./MigrationVersion";
 
 // 初始化所有模型
 const models = {
@@ -10,6 +11,7 @@ const models = {
   Enterprise,
   MigrationHistory,
   MigrationLock,
+  MigrationVersion,
 };
 
 // 同步数据库

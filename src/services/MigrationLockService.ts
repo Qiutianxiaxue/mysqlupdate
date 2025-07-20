@@ -384,6 +384,48 @@ export class MigrationLockService {
       };
     }
   }
+
+  /**
+   * 清理所有锁（服务启动时使用）
+   * 服务重启后，之前的锁都应该被清理掉
+   */
+  async cleanupAllLocks(): Promise<{
+    success: boolean;
+    message: string;
+    cleanedCount: number;
+  }> {
+    try {
+      const result = await MigrationLock.update(
+        { is_active: false },
+        {
+          where: {
+            is_active: true,
+          },
+        }
+      );
+
+      const cleanedCount = result[0];
+
+      if (cleanedCount > 0) {
+        logger.info(`🧹 服务启动时清理了 ${cleanedCount} 个活跃的迁移锁`);
+      }
+
+      return {
+        success: true,
+        message: `成功清理 ${cleanedCount} 个活跃的迁移锁`,
+        cleanedCount,
+      };
+    } catch (error) {
+      logger.error("清理所有锁失败:", error);
+      return {
+        success: false,
+        message: `清理所有锁失败: ${
+          error instanceof Error ? error.message : "未知错误"
+        }`,
+        cleanedCount: 0,
+      };
+    }
+  }
 }
 
 export default MigrationLockService;
