@@ -1,3 +1,6 @@
+// 初始化模块别名支持 (必须在其他导入之前)
+import "module-alias/register";
+
 import { startServer } from "./app";
 import logger from "./utils/logger";
 
