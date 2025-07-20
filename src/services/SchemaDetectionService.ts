@@ -117,6 +117,91 @@ export class SchemaDetectionService {
   }
 
   /**
+   * 检测指定表的结构变化（支持完整表名和清理后表名分别查询）
+   * @param fullTableName 完整的基准数据库表名（包含#和@符号）
+   * @param cleanTableName 清理后的表名（用于查询TableSchema）
+   * @param databaseType 数据库类型
+   */
+  async detectTableChangesWithFullName(
+    fullTableName: string,
+    cleanTableName: string,
+    databaseType: "main" | "log" | "order" | "static" = "main"
+  ): Promise<TableSchemaChange | null> {
+    try {
+      logger.info(`🔍 开始检测表 ${fullTableName} 的结构变化 (${databaseType})`);
+
+      // 使用完整表名获取基准数据库中的表结构信息
+      const currentTableInfo = await this.getCurrentTableInfo(fullTableName);
+      if (!currentTableInfo) {
+        logger.warn(`表 ${fullTableName} 在基准数据库中不存在`);
+        return null;
+      }
+
+      // 使用清理后的表名获取TableSchema中该表的最新版本
+      // 需要根据分区类型生成唯一的表名标识
+      const partitionInfo = this.detectPartitionFromTableName(fullTableName);
+      let uniqueTableName = cleanTableName;
+      if (partitionInfo.partition_type === "store") {
+        uniqueTableName = `${cleanTableName}__store_partition`;
+      } else if (partitionInfo.partition_type === "time") {
+        uniqueTableName = `${cleanTableName}__time_${partitionInfo.time_interval}_partition`;
+      }
+      
+      const latestSchema = await this.getLatestTableSchema(
+        uniqueTableName,
+        databaseType
+      );
+
+      // 生成新的schema定义（使用清理后的表名）
+      const newSchemaDefinition = this.generateSchemaDefinition({
+        ...currentTableInfo,
+        tableName: cleanTableName, // 使用清理后的表名生成schema
+      });
+
+      // 比较是否有变化
+      const changes = this.compareSchemas(latestSchema, newSchemaDefinition);
+
+      if (changes.length === 0) {
+        logger.info(`表 ${fullTableName} 没有结构变化`);
+        return null;
+      }
+
+      // 生成新版本号
+      const newVersion = this.generateNewVersion(
+        latestSchema?.schema_version || null
+      );
+
+      const result: TableSchemaChange = {
+        table_name: uniqueTableName, // 使用唯一表名标识
+        database_type: databaseType,
+        partition_type: partitionInfo.partition_type || "none",
+        current_version: latestSchema?.schema_version || null,
+        new_version: newVersion,
+        schema_definition: JSON.stringify(newSchemaDefinition),
+        changes_detected: changes,
+        upgrade_notes: `自动检测到的结构变化: ${changes.join(", ")}`,
+      };
+
+      // 只在有值时添加可选字段
+      const timeInterval = latestSchema?.time_interval || partitionInfo.time_interval;
+      const timeFormat = latestSchema?.time_format || partitionInfo.time_format;
+      
+      if (timeInterval) {
+        result.time_interval = timeInterval;
+      }
+      if (timeFormat) {
+        result.time_format = timeFormat;
+      }
+
+      logger.info(`表 ${fullTableName} (${cleanTableName}) 检测到 ${changes.length} 个变化`);
+      return result;
+    } catch (error) {
+      logger.error(`检测表 ${fullTableName} 结构变化失败:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * 检测所有数据库类型的表结构变化
    */
   async detectAllTablesChanges(): Promise<{
@@ -230,10 +315,12 @@ export class SchemaDetectionService {
         // 1. 检测现有表的结构变化
         for (const tableName of existingTables) {
           try {
-            // 解析表名获取真实表名进行检测
+            // 解析表名获取清理后的表名，用于查询TableSchema
             const parsed = this.parseTableName(tableName);
-            const change = await this.detectTableChanges(
-              parsed.tableName,
+            // 使用原始表名查询基准数据库，使用清理后的表名查询TableSchema
+            const change = await this.detectTableChangesWithFullName(
+              tableName,  // 原始表名，用于查询基准数据库
+              parsed.tableName, // 清理后的表名，用于查询TableSchema
               databaseType
             );
             if (change) {
@@ -364,8 +451,15 @@ export class SchemaDetectionService {
       // 检测分表类型（使用原始表名来检测分表规则）
       const partitionInfo = this.detectPartitionFromTableName(originalTableName);
 
+      // 使用统一的方法生成唯一表名标识
+      const uniqueTableName = this.generateUniqueTableName(
+        cleanTableName,
+        partitionInfo.partition_type,
+        partitionInfo.time_interval
+      );
+
       const result: TableSchemaChange = {
-        table_name: cleanTableName, // 使用清理后的表名
+        table_name: uniqueTableName, // 使用唯一表名标识
         database_type: finalDatabaseType,
         partition_type: partitionInfo.partition_type,
         current_version: null, // 新表没有当前版本
@@ -374,7 +468,7 @@ export class SchemaDetectionService {
         changes_detected: ["新表创建"],
         upgrade_notes: this.buildDetailedUpgradeNotes(
           originalTableName,
-          cleanTableName,
+          uniqueTableName,
           finalDatabaseType,
           partitionInfo
         ),
@@ -478,6 +572,33 @@ export class SchemaDetectionService {
   }
 
   /**
+   * 根据分区信息生成唯一的表名标识
+   */
+  private generateUniqueTableName(baseTableName: string, partitionType: string, timeInterval?: string): string {
+    if (partitionType === "store") {
+      return `${baseTableName}__store_partition`;
+    } else if (partitionType === "time" && timeInterval) {
+      return `${baseTableName}__time_${timeInterval}_partition`;
+    }
+    return baseTableName; // none类型使用原始表名
+  }
+
+  /**
+   * 从唯一表名标识反推基础表名
+   */
+  private extractBaseTableName(uniqueTableName: string): string {
+    if (uniqueTableName.includes('__store_partition')) {
+      return uniqueTableName.replace('__store_partition', '');
+    } else if (uniqueTableName.includes('__time_')) {
+      const match = uniqueTableName.match(/^(.+)__time_\w+_partition$/);
+      if (match && match[1]) {
+        return match[1];
+      }
+    }
+    return uniqueTableName; // 如果没有特殊后缀，说明是普通表
+  }
+
+  /**
    * 分析表状态，考虑分区配置
    */
   private async analyzeTablesWithPartition(
@@ -506,19 +627,33 @@ export class SchemaDetectionService {
     // 检查基准数据库中的每个表
     for (const baseTable of baseDbTables) {
       let matched = false;
+      
+      // 解析基准库表名，获取清理后的表名和分区信息
+      const parsedBaseTable = this.parseTableName(baseTable);
+      const cleanBaseTableName = parsedBaseTable.tableName;
+      const basePartitionInfo = this.detectPartitionFromTableName(baseTable);
+      
+      // 生成基准表的唯一表名标识
+      const baseUniqueTableName = this.generateUniqueTableName(
+        cleanBaseTableName, 
+        basePartitionInfo.partition_type,
+        basePartitionInfo.time_interval
+      );
 
-      // 1. 直接匹配（无分区表或精确匹配的分区表）
-      if (definedTables.includes(baseTable)) {
+      // 1. 精确匹配：直接匹配唯一表名标识
+      if (definedTables.includes(baseUniqueTableName)) {
         existingTables.push(baseTable);
         matched = true;
+        logger.debug(`表 ${baseTable} 通过唯一表名标识 ${baseUniqueTableName} 精确匹配`);
         continue;
       }
 
-      // 2. 检查是否是分区表
+      // 2. 检查是否是分区表的实例（用于匹配已定义的分区表模板）
       for (const [definedTable, partitionConfig] of partitionRules) {
         if (this.isPartitionTable(baseTable, definedTable, partitionConfig)) {
           existingTables.push(baseTable);
           matched = true;
+          logger.debug(`表 ${baseTable} 匹配已定义表 ${definedTable} 的分区规则`);
           break;
         }
       }
@@ -526,6 +661,7 @@ export class SchemaDetectionService {
       // 3. 如果没有匹配，则为新表
       if (!matched) {
         newTables.push(baseTable);
+        logger.debug(`表 ${baseTable} 未匹配，标记为新表`);
       }
     }
 
@@ -534,14 +670,45 @@ export class SchemaDetectionService {
       const partitionConfig = partitionRules.get(definedTable);
       let foundInBase = false;
 
-      // 1. 直接匹配
-      if (baseDbTables.includes(definedTable)) {
+      // 从已定义表的唯一标识反推出基础表名
+      const baseTableName = this.extractBaseTableName(definedTable);
+
+      // 1. 精确匹配：使用基础表名和分区类型匹配
+      const matchingBaseTables = baseDbTables.filter(baseTable => {
+        const parsedBase = this.parseTableName(baseTable);
+        const basePartitionInfo = this.detectPartitionFromTableName(baseTable);
+        
+        // 基础表名必须匹配
+        if (parsedBase.tableName !== baseTableName) {
+          return false;
+        }
+        
+        // 分区类型也必须匹配
+        const definedPartitionType = partitionConfig?.partition_type || "none";
+        if (basePartitionInfo.partition_type !== definedPartitionType) {
+          return false;
+        }
+        
+        // 如果都是时间分区，检查时间配置
+        if (basePartitionInfo.partition_type === "time" && partitionConfig) {
+          return (
+            basePartitionInfo.time_interval === partitionConfig.time_interval &&
+            basePartitionInfo.time_format === partitionConfig.time_format
+          );
+        }
+        
+        return true;
+      });
+      
+      if (matchingBaseTables.length > 0) {
         foundInBase = true;
+        logger.debug(`已定义表 ${definedTable} (基础表名: ${baseTableName}, 分区类型: ${partitionConfig?.partition_type || "none"}) 在基准库中找到精确匹配: ${matchingBaseTables.join(', ')}`);
       } else {
-        // 2. 检查是否有对应的分区表
+        // 2. 检查是否有对应的分区表实例
         for (const baseTable of baseDbTables) {
-          if (this.isPartitionTable(baseTable, definedTable, partitionConfig)) {
+          if (this.isPartitionTable(baseTable, baseTableName, partitionConfig)) {
             foundInBase = true;
+            logger.debug(`已定义表 ${definedTable} 通过分区规则匹配基准库表: ${baseTable}`);
             break;
           }
         }
@@ -550,6 +717,7 @@ export class SchemaDetectionService {
       // 如果基准数据库中不存在该表，检查是否需要生成删除配置
       if (!foundInBase) {
         deletedTables.push(definedTable);
+        logger.debug(`已定义表 ${definedTable} (分区类型: ${partitionConfig?.partition_type || "none"}) 在基准库中未找到，标记为删除`);
       }
     }
 
@@ -558,6 +726,9 @@ export class SchemaDetectionService {
 
   /**
    * 检查表是否为指定基表的分区表
+   * actualTableName: 基准库中的实际表名（可能包含#和@符号）
+   * baseTableName: TableSchema中定义的基础表名（已清理）
+   * partitionConfig: 分区配置
    */
   private isPartitionTable(
     actualTableName: string,
@@ -568,25 +739,35 @@ export class SchemaDetectionService {
       return false;
     }
 
-    // 按门店分区：表名格式为 base_table_name_store_{store_id}
-    if (partitionConfig.partition_type === "store") {
-      const storePattern = new RegExp(`^${baseTableName}_store_\\d+$`);
-      return storePattern.test(actualTableName);
+    // 解析实际表名，获取清理后的表名和分区信息
+    const parsedActual = this.parseTableName(actualTableName);
+    const actualCleanName = parsedActual.tableName;
+    
+    // 检测实际表的分区信息
+    const actualPartitionInfo = this.detectPartitionFromTableName(actualTableName);
+
+    // 如果基础表名不匹配，直接返回false
+    if (actualCleanName !== baseTableName) {
+      return false;
     }
 
-    // 按时间分区：根据time_format判断
-    if (
-      partitionConfig.partition_type === "time" &&
-      partitionConfig.time_format
-    ) {
-      // 将时间格式转换为正则表达式
-      let timePattern = partitionConfig.time_format
-        .replace(/YYYY/g, "\\d{4}")
-        .replace(/MM/g, "\\d{2}")
-        .replace(/DD/g, "\\d{2}");
+    // 如果分区类型不匹配，返回false
+    if (actualPartitionInfo.partition_type !== partitionConfig.partition_type) {
+      return false;
+    }
 
-      const fullPattern = new RegExp(`^${baseTableName}${timePattern}$`);
-      return fullPattern.test(actualTableName);
+    // 按门店分区：检查是否有#store标记
+    if (partitionConfig.partition_type === "store") {
+      return actualPartitionInfo.partition_type === "store";
+    }
+
+    // 按时间分区：检查时间间隔是否匹配
+    if (partitionConfig.partition_type === "time") {
+      return (
+        actualPartitionInfo.partition_type === "time" &&
+        actualPartitionInfo.time_interval === partitionConfig.time_interval &&
+        actualPartitionInfo.time_format === partitionConfig.time_format
+      );
     }
 
     return false;
