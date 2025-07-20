@@ -40,7 +40,7 @@ MigrationVersion.init(
     table_name: {
       type: DataTypes.STRING(255),
       allowNull: false,
-      comment: "表名（基础表名）",
+      comment: "完整表名（包含分表后缀，如 qc_order_store_001 或 qc_log_202401）",
     },
     database_type: {
       type: DataTypes.ENUM("main", "log", "order", "static"),

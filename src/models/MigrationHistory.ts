@@ -77,7 +77,7 @@ MigrationHistory.init(
         "迁移类型：CREATE-创建表，ALTER-修改表，DROP-删除表/列，INDEX-索引操作",
     },
     sql_statement: {
-      type: DataTypes.TEXT,
+      type: DataTypes.TEXT("long"),
       allowNull: false,
       comment: "执行的SQL语句",
     },
@@ -97,7 +97,7 @@ MigrationHistory.init(
       comment: "错误信息（执行失败时记录）",
     },
     migration_batch: {
-      type: DataTypes.STRING(50),
+      type: DataTypes.STRING(255),
       allowNull: false,
       comment: "迁移批次ID，用于关联同一次迁移操作的多个SQL",
     },

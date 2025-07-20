@@ -403,7 +403,7 @@ export class DatabaseMigrationService {
       // 如果提供了schema信息，进行版本检查
       if (schema) {
         const needsMigration = await MigrationVersionService.shouldMigrate(
-          tableDefinition.tableName, // 使用原始表名（不带后缀）
+          tableName, // 使用实际的完整表名（包含后缀）
           schema.database_type,
           schema.schema_version,
           schema.partition_type,
@@ -432,7 +432,7 @@ export class DatabaseMigrationService {
         // 记录删除操作的版本
         if (schema) {
           await MigrationVersionService.recordMigrationVersion(
-            tableDefinition.tableName,
+            tableName, // 使用实际的完整表名（包含后缀）
             schema.database_type,
             schema.schema_version,
             schema.partition_type,
@@ -466,7 +466,7 @@ export class DatabaseMigrationService {
       // 记录成功的迁移版本
       if (schema) {
         await MigrationVersionService.recordMigrationVersion(
-          tableDefinition.tableName,
+          tableName, // 使用实际的完整表名（包含后缀）
           schema.database_type,
           schema.schema_version,
           schema.partition_type,
