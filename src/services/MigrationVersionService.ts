@@ -23,6 +23,7 @@ export class MigrationVersionService {
    * @param tableName 表名（基础表名）
    * @param databaseType 数据库类型
    * @param currentVersion 当前要执行的版本号
+   * @param enterpriseId 企业ID
    * @param partitionType 分表类型
    * @param timeInterval 时间间隔（可选）
    * @returns true: 需要迁移, false: 已经迁移过此版本
@@ -31,6 +32,7 @@ export class MigrationVersionService {
     tableName: string,
     databaseType: "main" | "log" | "order" | "static",
     currentVersion: string,
+    enterpriseId: number,
     partitionType: string = "none",
     timeInterval?: string
   ): Promise<boolean> {
@@ -43,6 +45,7 @@ export class MigrationVersionService {
           table_name: tableName,
           database_type: databaseType,
           partition_rule: partitionRule,
+          enterprise_id: enterpriseId,
         },
       });
 
@@ -74,6 +77,7 @@ export class MigrationVersionService {
    * @param tableName 表名（基础表名）
    * @param databaseType 数据库类型
    * @param version 已迁移到的版本号
+   * @param enterpriseId 企业ID
    * @param partitionType 分表类型
    * @param timeInterval 时间间隔（可选）
    */
@@ -81,6 +85,7 @@ export class MigrationVersionService {
     tableName: string,
     databaseType: "main" | "log" | "order" | "static",
     version: string,
+    enterpriseId: number,
     partitionType: string = "none",
     timeInterval?: string
   ): Promise<void> {
@@ -94,6 +99,7 @@ export class MigrationVersionService {
         partition_rule: partitionRule,
         current_migrated_version: version,
         migration_time: now,
+        enterprise_id: enterpriseId,
       };
 
       // 使用 upsert 进行插入或更新

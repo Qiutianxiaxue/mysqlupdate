@@ -3,6 +3,7 @@ import sequelize from "@/config/database";
 
 interface MigrationVersionAttributes {
   migration_version_id: number;
+  enterprise_id: number; // 企业ID
   table_name: string;
   database_type: "main" | "log" | "order" | "static";
   partition_rule: string; // 分表规则标识，如 "store", "time_month", "none"
@@ -20,6 +21,7 @@ class MigrationVersion
   implements MigrationVersionAttributes
 {
   public migration_version_id!: number;
+  public enterprise_id!: number;
   public table_name!: string;
   public database_type!: "main" | "log" | "order" | "static";
   public partition_rule!: string;
@@ -36,6 +38,11 @@ MigrationVersion.init(
       type: DataTypes.INTEGER,
       autoIncrement: true,
       primaryKey: true,
+    },
+    enterprise_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      comment: "企业ID，标识该版本记录属于哪个企业",
     },
     table_name: {
       type: DataTypes.STRING(255),
@@ -81,13 +88,17 @@ MigrationVersion.init(
     updatedAt: "update_time",
     indexes: [
       {
-        name: "idx_table_database_partition",
+        name: "idx_enterprise_table_database_partition",
         unique: true,
-        fields: ["table_name", "database_type", "partition_rule"],
+        fields: ["enterprise_id", "table_name", "database_type", "partition_rule"],
       },
       {
         name: "idx_migration_time",
         fields: ["migration_time"],
+      },
+      {
+        name: "idx_enterprise_id",
+        fields: ["enterprise_id"],
       },
     ],
     comment: "记录表的迁移版本信息，用于性能优化",

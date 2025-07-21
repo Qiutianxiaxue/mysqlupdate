@@ -4,6 +4,7 @@ import sequelize from "@/config/database";
 // 迁移历史记录接口
 export interface MigrationHistoryAttributes {
   migration_history_id: number;
+  enterprise_id: number; // 企业ID
   table_name: string;
   database_type: "main" | "log" | "order" | "static";
   partition_type: "store" | "time" | "none";
@@ -29,6 +30,7 @@ class MigrationHistory extends Model<
   MigrationHistoryCreationAttributes
 > {
   public migration_history_id!: number;
+  public enterprise_id!: number;
   public table_name!: string;
   public database_type!: "main" | "log" | "order" | "static";
   public partition_type!: "store" | "time" | "none";
@@ -49,6 +51,11 @@ MigrationHistory.init(
       autoIncrement: true,
       primaryKey: true,
       comment: "迁移历史记录的唯一标识ID",
+    },
+    enterprise_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      comment: "企业ID，标识该迁移记录属于哪个企业",
     },
     table_name: {
       type: DataTypes.STRING(100),
@@ -115,8 +122,8 @@ MigrationHistory.init(
     timestamps: false, // 使用自定义的时间字段
     indexes: [
       {
-        name: "idx_table_database",
-        fields: ["table_name", "database_type"],
+        name: "idx_enterprise_table_database",
+        fields: ["enterprise_id", "table_name", "database_type"],
       },
       {
         name: "idx_migration_batch",
@@ -129,6 +136,10 @@ MigrationHistory.init(
       {
         name: "idx_execution_status",
         fields: ["execution_status"],
+      },
+      {
+        name: "idx_enterprise_id",
+        fields: ["enterprise_id"],
       },
     ],
   }

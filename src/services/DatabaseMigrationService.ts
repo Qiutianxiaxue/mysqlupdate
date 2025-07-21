@@ -40,6 +40,7 @@ export class DatabaseMigrationService {
   private connectionManager: DatabaseConnectionManager;
   private currentMigrationBatch: string = "";
   private currentSchema: TableSchema | null = null;
+  private currentEnterpriseId: number = 0;
 
   constructor() {
     this.connectionManager = new DatabaseConnectionManager();
@@ -57,6 +58,7 @@ export class DatabaseMigrationService {
     sqlStatement: string,
     executionStatus: "SUCCESS" | "FAILED",
     executionTime: number,
+    enterpriseId: number,
     errorMessage?: string
   ): Promise<void> {
     try {
@@ -70,6 +72,7 @@ export class DatabaseMigrationService {
         execution_status: executionStatus,
         execution_time: executionTime,
         migration_batch: this.currentMigrationBatch,
+        enterprise_id: enterpriseId,
       };
 
       if (errorMessage) {
@@ -117,6 +120,7 @@ export class DatabaseMigrationService {
         sqlStatement,
         executionStatus,
         executionTime,
+        this.currentEnterpriseId,
         errorMessage
       );
     }
@@ -370,7 +374,7 @@ export class DatabaseMigrationService {
           enterprise
         );
       } else {
-        await this.migrateTableWithConnection(connection, tableDefinition, undefined, schema);
+        await this.migrateTableWithConnection(connection, tableDefinition, enterprise.enterprise_id, undefined, schema);
       }
 
       logger.info(
@@ -394,10 +398,18 @@ export class DatabaseMigrationService {
   private async migrateTableWithConnection(
     connection: Sequelize,
     tableDefinition: TableDefinition,
+    enterpriseId: number,
     storeId?: string,
     schema?: TableSchema
   ): Promise<void> {
     try {
+      // 验证并设置当前企业ID
+      if (enterpriseId === undefined) {
+        throw new Error(`企业ID是必填参数，不能为空`);
+      }
+      
+      this.currentEnterpriseId = enterpriseId;
+      
       const tableName = this.getTableName(tableDefinition.tableName, storeId);
       
       // 如果提供了schema信息，进行版本检查
@@ -406,12 +418,13 @@ export class DatabaseMigrationService {
           tableName, // 使用实际的完整表名（包含后缀）
           schema.database_type,
           schema.schema_version,
+          enterpriseId,
           schema.partition_type,
           schema.time_interval || undefined
         );
 
         if (!needsMigration) {
-          logger.info(`⏭️ 表 ${tableName} 已经是版本 ${schema.schema_version}，跳过迁移`);
+          logger.info(`⏭️ 企业 ${enterpriseId} 表 ${tableName} 已经是版本 ${schema.schema_version}，跳过迁移`);
           return;
         }
       }
@@ -435,6 +448,7 @@ export class DatabaseMigrationService {
             tableName, // 使用实际的完整表名（包含后缀）
             schema.database_type,
             schema.schema_version,
+            enterpriseId,
             schema.partition_type,
             schema.time_interval || undefined
           );
@@ -469,6 +483,7 @@ export class DatabaseMigrationService {
           tableName, // 使用实际的完整表名（包含后缀）
           schema.database_type,
           schema.schema_version,
+          enterpriseId,
           schema.partition_type,
           schema.time_interval || undefined
         );
@@ -522,6 +537,7 @@ export class DatabaseMigrationService {
       startDate,
       endDate,
       interval,
+      enterprise.enterprise_id,
       schema.time_format,
       schema
     );
@@ -564,6 +580,7 @@ export class DatabaseMigrationService {
         await this.migrateTableWithConnection(
           connection,
           tableDefinition,
+          enterprise.enterprise_id,
           storeId.toString(),
           schema
         );
@@ -614,6 +631,7 @@ export class DatabaseMigrationService {
     startDate: Date,
     endDate: Date,
     interval: "day" | "month" | "year",
+    enterpriseId: number,
     timeFormat?: string,
     schema?: TableSchema
   ): Promise<void> {
@@ -629,6 +647,7 @@ export class DatabaseMigrationService {
       await this.migrateTableWithConnection(
         connection,
         tableDefinition,
+        enterpriseId,
         timeSuffix,
         schema
       );
@@ -2700,6 +2719,7 @@ export class DatabaseMigrationService {
       await this.migrateTableWithConnection(
         connection,
         tableDefinition,
+        enterprise.enterprise_id,
         storeId,
         schema
       );
