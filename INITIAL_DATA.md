@@ -30,15 +30,17 @@
 
 #### 获取所有模板
 ```http
-GET /api/initial-data-template
-Query参数:
-- databaseType: main|log|order|static (可选)
-- isEnabled: true|false (可选)
+POST /api/initial-data-template/list
+Body (可选):
+{
+  "databaseType": "main", // main|log|order|static (可选)
+  "isEnabled": true       // true|false (可选)
+}
 ```
 
 #### 创建新模板
 ```http
-POST /api/initial-data-template
+POST /api/initial-data-template/create
 Body:
 {
   "template_name": "脚本名称",
@@ -52,21 +54,47 @@ Body:
 }
 ```
 
+#### 根据ID获取模板
+```http
+POST /api/initial-data-template/get-by-id
+Body:
+{
+  "templateId": 1
+}
+```
+
 #### 更新模板
 ```http
-PUT /api/initial-data-template/{templateId}
+POST /api/initial-data-template/update
+Body:
+{
+  "templateId": 1,
+  "template_name": "脚本名称",
+  "template_version": "1.1.0",
+  "database_type": "main",
+  "script_content": "SQL脚本内容",
+  "description": "脚本描述",
+  "execution_order": 10,
+  "dependencies": ["依赖的脚本名称"],
+  "is_enabled": true
+}
 ```
 
 #### 删除模板
 ```http
-DELETE /api/initial-data-template/{templateId}
+POST /api/initial-data-template/delete
+Body:
+{
+  "templateId": 1
+}
 ```
 
 #### 启用/禁用模板
 ```http
-PATCH /api/initial-data-template/{templateId}/toggle
+POST /api/initial-data-template/toggle
 Body:
 {
+  "templateId": 1,
   "is_enabled": true
 }
 ```
@@ -75,9 +103,10 @@ Body:
 
 #### 执行初始数据
 ```http
-POST /api/initial-data/{enterpriseId}/execute
+POST /api/initial-data/execute
 Body:
 {
+  "enterpriseId": 123,
   "databaseType": "main", // 可选，不指定则执行所有类型
   "forceRerun": false     // 可选，是否强制重新执行已成功的脚本
 }
@@ -85,19 +114,42 @@ Body:
 
 #### 获取执行状态
 ```http
-GET /api/initial-data/{enterpriseId}/status?databaseType=main
+POST /api/initial-data/status
+Body:
+{
+  "enterpriseId": 123,
+  "databaseType": "main"  // 可选
+}
 ```
 
 #### 获取执行历史
 ```http
-GET /api/initial-data/{enterpriseId}/history?databaseType=main&limit=50
+POST /api/initial-data/history
+Body:
+{
+  "enterpriseId": 123,
+  "databaseType": "main", // 可选
+  "limit": 50             // 可选，默认50
+}
+```
+
+#### 检查特定脚本执行状态
+```http
+POST /api/initial-data/check-script
+Body:
+{
+  "enterpriseId": 123,
+  "databaseType": "main",
+  "script_name": "001_system_config",
+  "script_version": "1.0.0"
+}
 ```
 
 ## 使用指南
 
 ### 1. 添加新的初始数据脚本
 
-通过API创建新的脚本模板：
+通过API创建新的脚本模板（POST /api/initial-data-template/create）：
 
 ```json
 {
@@ -112,12 +164,30 @@ GET /api/initial-data/{enterpriseId}/history?databaseType=main&limit=50
 }
 ```
 
+完整的curl示例：
+
+```bash
+curl -X POST http://localhost:3000/api/initial-data-template/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "template_name": "004_product_categories",
+    "template_version": "1.0.0",
+    "database_type": "main",
+    "script_content": "INSERT INTO product_categories (name, description) VALUES (\"电子产品\", \"各类电子产品分类\");",
+    "description": "初始化商品分类数据",
+    "execution_order": 4,
+    "dependencies": ["003_admin_menus"],
+    "is_enabled": true
+  }'
+```
+
 ### 2. 执行企业初始数据
 
 ```bash
-curl -X POST http://localhost:3000/api/initial-data/123/execute \
+curl -X POST http://localhost:3000/api/initial-data/execute \
   -H "Content-Type: application/json" \
   -d '{
+    "enterpriseId": 123,
     "databaseType": "main",
     "forceRerun": false
   }'
@@ -126,7 +196,11 @@ curl -X POST http://localhost:3000/api/initial-data/123/execute \
 ### 3. 查看执行状态
 
 ```bash
-curl http://localhost:3000/api/initial-data/123/status
+curl -X POST http://localhost:3000/api/initial-data/status \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enterpriseId": 123
+  }'
 ```
 
 ### 4. 脚本依赖管理
