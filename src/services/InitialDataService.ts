@@ -116,8 +116,7 @@ export class InitialDataService {
         } catch (error) {
           const errorMessage =
             error instanceof Error ? error.message : String(error);
-          console.log(`脚本执行失败----: ${script.name}`, error);
-          logger.error(`脚本执行失败222: ${script.name}`, {
+          logger.error(`脚本执行失败: ${script.name}`, {
             enterpriseId,
             scriptName: script.name,
             error: errorMessage,
@@ -250,8 +249,6 @@ export class InitialDataService {
         affectedRows,
       });
     } catch (error) {
-      console.error(`脚本执行失败---111`, error);
-      
       // 详细记录错误信息
       if (error instanceof Error && error.name === 'SequelizeValidationError') {
         console.log('Validation Error Details:', (error as any).errors);
@@ -262,7 +259,7 @@ export class InitialDataService {
       
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      logger.error(`脚本执行失败3333`, {
+      logger.error(`脚本执行失败`, {
         enterpriseId: enterprise.enterprise_id,
         scriptName: script.name,
         error: errorMessage,
