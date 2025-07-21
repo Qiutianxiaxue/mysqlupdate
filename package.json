@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "test": "jest",
     "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix"
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "init-templates": "ts-node -r tsconfig-paths/register scripts/init-default-templates.ts"
   },
   "keywords": [
     "database",

@@ -4,6 +4,8 @@ import Enterprise from "./Enterprise";
 import MigrationHistory from "./MigrationHistory";
 import MigrationLock from "./MigrationLock";
 import MigrationVersion from "./MigrationVersion";
+import InitialDataHistory from "./InitialDataHistory";
+import InitialDataTemplate from "./InitialDataTemplate";
 
 // 初始化所有模型
 const models = {
@@ -12,6 +14,8 @@ const models = {
   MigrationHistory,
   MigrationLock,
   MigrationVersion,
+  InitialDataHistory,
+  InitialDataTemplate,
 };
 
 // 同步数据库

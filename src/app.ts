@@ -6,6 +6,8 @@ import dotenv from "dotenv";
 import migrationRoutes from "@/routes/migration";
 import schemaDetectionRoutes from "@/routes/schemaDetection";
 import migrationVersionRoutes from "@/routes/migrationVersion";
+import initialDataRoutes from "@/routes/initialData";
+import initialDataTemplateRoutes from "@/routes/initialDataTemplate";
 import { syncDatabase } from "@/models";
 import { testBaseConnection, getBaseDatabaseInfo } from "@/config/baseDatabase";
 import { MigrationLockService } from "@/services/MigrationLockService";
@@ -27,6 +29,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api/migration", migrationRoutes);
 app.use("/api/schema-detection", schemaDetectionRoutes);
 app.use("/api/migration-version", migrationVersionRoutes);
+app.use("/api/initial-data", initialDataRoutes);
+app.use("/api/initial-data-template", initialDataTemplateRoutes);
 
 // 健康检查
 app.get("/health", (req, res) => {
@@ -47,6 +51,8 @@ app.get("/", (req, res) => {
       migration: "/api/migration",
       schemaDetection: "/api/schema-detection",
       migrationVersion: "/api/migration-version",
+      initialData: "/api/initial-data",
+      initialDataTemplate: "/api/initial-data-template",
     },
   });
 });
