@@ -114,8 +114,10 @@ export class InitialDataService {
             scriptVersion: script.version,
           });
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          logger.error(`脚本执行失败: ${script.name}`, {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          console.log(`脚本执行失败----: ${script.name}`, error);
+          logger.error(`脚本执行失败222: ${script.name}`, {
             enterpriseId,
             scriptName: script.name,
             error: errorMessage,
@@ -129,18 +131,28 @@ export class InitialDataService {
           result.success = false;
 
           // 记录失败的执行历史
-          await InitialDataHistory.create({
-            enterprise_id: enterpriseId,
-            database_type: script.databaseType,
-            script_name: script.name,
-            script_version: script.version,
-            execution_status: "FAILED",
-            execution_time: 0,
-            affected_rows: 0,
-            error_message: errorMessage,
-            script_content: script.content,
-            execution_batch: executionBatch,
-          });
+          try {
+            await InitialDataHistory.create({
+              enterprise_id: enterpriseId,
+              database_type: script.databaseType,
+              script_name: script.name,
+              script_version: script.version,
+              execution_status: "FAILED",
+              execution_time: 0,
+              affected_rows: 0,
+              error_message: errorMessage,
+              script_content: script.content,
+              execution_batch: executionBatch,
+            });
+          } catch (historyError) {
+            console.error('创建执行历史失败:', historyError);
+            if (historyError instanceof Error && historyError.name === 'SequelizeValidationError') {
+              console.log('History Validation Error Details:', (historyError as any).errors);
+              (historyError as any).errors?.forEach((validationError: any) => {
+                console.log(`历史记录字段: ${validationError.path}, 值长度: ${validationError.value?.length || 'null'}, 错误: ${validationError.message}`);
+              });
+            }
+          }
         }
       }
 
@@ -155,7 +167,8 @@ export class InitialDataService {
 
       return result;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       logger.error(`初始数据执行失败`, {
         enterpriseId,
         databaseType,
@@ -200,9 +213,13 @@ export class InitialDataService {
           const result = await sequelize.query(statement, {
             type: QueryTypes.RAW,
           });
-          
+
           // 尝试获取影响的行数
-          if (Array.isArray(result) && result[1] && typeof result[1] === 'object') {
+          if (
+            Array.isArray(result) &&
+            result[1] &&
+            typeof result[1] === "object"
+          ) {
             const meta = result[1] as any;
             if (meta.affectedRows !== undefined) {
               affectedRows += meta.affectedRows;
@@ -233,8 +250,19 @@ export class InitialDataService {
         affectedRows,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(`脚本执行失败`, {
+      console.error(`脚本执行失败---111`, error);
+      
+      // 详细记录错误信息
+      if (error instanceof Error && error.name === 'SequelizeValidationError') {
+        console.log('Validation Error Details:', (error as any).errors);
+        (error as any).errors?.forEach((validationError: any) => {
+          console.log(`字段: ${validationError.path}, 值: ${validationError.value}, 错误: ${validationError.message}`);
+        });
+      }
+      
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      logger.error(`脚本执行失败3333`, {
         enterpriseId: enterprise.enterprise_id,
         scriptName: script.name,
         error: errorMessage,
@@ -263,7 +291,9 @@ export class InitialDataService {
 
     try {
       // 从数据库获取启用的脚本模板
-      const templates = await InitialDataTemplate.getEnabledTemplates(databaseType);
+      const templates = await InitialDataTemplate.getEnabledTemplates(
+        databaseType
+      );
 
       for (const template of templates) {
         scripts.push({
@@ -277,7 +307,9 @@ export class InitialDataService {
         });
       }
 
-      logger.info(`从数据库加载了 ${scripts.length} 个初始数据脚本模板`, { databaseType });
+      logger.info(`从数据库加载了 ${scripts.length} 个初始数据脚本模板`, {
+        databaseType,
+      });
       return scripts;
     } catch (error) {
       logger.error(`从数据库加载初始数据脚本模板失败`, { error });
@@ -288,7 +320,9 @@ export class InitialDataService {
   /**
    * 按依赖关系和顺序排序脚本
    */
-  private sortScriptsByDependencies(scripts: InitialDataScript[]): InitialDataScript[] {
+  private sortScriptsByDependencies(
+    scripts: InitialDataScript[]
+  ): InitialDataScript[] {
     // 简单的拓扑排序实现
     const sorted: InitialDataScript[] = [];
     const visited = new Set<string>();
@@ -298,7 +332,7 @@ export class InitialDataService {
       if (visiting.has(script.name)) {
         throw new Error(`检测到循环依赖: ${script.name}`);
       }
-      
+
       if (visited.has(script.name)) {
         return;
       }
@@ -322,7 +356,7 @@ export class InitialDataService {
 
     // 按order排序后进行拓扑排序
     const orderedScripts = [...scripts].sort((a, b) => a.order - b.order);
-    
+
     for (const script of orderedScripts) {
       visit(script);
     }
@@ -337,7 +371,9 @@ export class InitialDataService {
     enterpriseId: number,
     databaseType?: "main" | "log" | "order" | "static"
   ) {
-    const dbTypes = databaseType ? [databaseType] : ["main", "log", "order", "static"];
+    const dbTypes = databaseType
+      ? [databaseType]
+      : ["main", "log", "order", "static"];
     const statusMap: any = {};
 
     for (const dbType of dbTypes) {
@@ -363,12 +399,14 @@ export class InitialDataService {
         executedScripts: executedScripts.length,
         pendingScripts: allScripts.length - executedScripts.length,
         executedList: executedScripts,
-        lastExecution: latestRecord ? {
-          scriptName: latestRecord.script_name,
-          status: latestRecord.execution_status,
-          executionTime: latestRecord.execution_time,
-          createTime: latestRecord.create_time,
-        } : null,
+        lastExecution: latestRecord
+          ? {
+              scriptName: latestRecord.script_name,
+              status: latestRecord.execution_status,
+              executionTime: latestRecord.execution_time,
+              createTime: latestRecord.create_time,
+            }
+          : null,
       };
     }
 
@@ -384,7 +422,7 @@ export class InitialDataService {
     limit: number = 50
   ) {
     const whereClause: any = { enterprise_id: enterpriseId };
-    
+
     if (databaseType) {
       whereClause.database_type = databaseType;
     }
