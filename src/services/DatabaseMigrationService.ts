@@ -486,11 +486,11 @@ export class DatabaseMigrationService {
     // 如果是log类型的表，开始时间需要向前推移计算，不生成多余的表
     if (schema.database_type === "log") {
       if (interval === "day") {
-        startDate.setDate(now.getDate() - 30); // 向前推移30天
+        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30); // 向前推移30天
       } else if (interval === "month") {
-        startDate.setMonth(now.getMonth() - 3); // 向前推移3个月
+        startDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()); // 向前推移3个月
       } else if (interval === "year") {
-        startDate.setFullYear(now.getFullYear() - 1); // 向前推移1年
+        startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()); // 向前推移1年
       }
     }
 
