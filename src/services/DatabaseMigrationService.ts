@@ -1238,12 +1238,15 @@ export class DatabaseMigrationService {
       }
 
       // 检查主键属性
-      const expectedIsPrimaryKey = definedColumn.primaryKey === true;
-      if (currentIsPrimaryKey !== expectedIsPrimaryKey) {
-        needsUpdate = true;
-        updateReasons.push(
-          `primaryKey: ${currentIsPrimaryKey} → ${expectedIsPrimaryKey}`
-        );
+      // 只有明确定义了primaryKey时才进行比较，undefined表示保持现状
+      if (definedColumn.primaryKey !== undefined) {
+        const expectedIsPrimaryKey = definedColumn.primaryKey === true;
+        if (currentIsPrimaryKey !== expectedIsPrimaryKey) {
+          needsUpdate = true;
+          updateReasons.push(
+            `primaryKey: ${currentIsPrimaryKey} → ${expectedIsPrimaryKey}`
+          );
+        }
       }
 
       // 检查自增属性
@@ -1290,14 +1293,17 @@ export class DatabaseMigrationService {
         }
 
         try {
-          // 分步处理主键变更
-          await this.handlePrimaryKeyChanges(
-            connection,
-            tableName,
-            columnName,
-            currentIsPrimaryKey,
-            expectedIsPrimaryKey
-          );
+          // 分步处理主键变更 - 只有明确定义了primaryKey时才处理
+          if (definedColumn.primaryKey !== undefined) {
+            const expectedIsPrimaryKey = definedColumn.primaryKey === true;
+            await this.handlePrimaryKeyChanges(
+              connection,
+              tableName,
+              columnName,
+              currentIsPrimaryKey,
+              expectedIsPrimaryKey
+            );
+          }
 
           // 构建ALTER COLUMN语句（不包含PRIMARY KEY，因为已单独处理）
           let columnDefinition = `\`${definedColumn.name}\` ${this.getDataType(
@@ -1364,6 +1370,30 @@ export class DatabaseMigrationService {
     tableName: string
   ): Promise<void> {
     try {
+      // 首先确认表确实有主键
+      const primaryKeyCheckResult = await connection.query(`
+        SELECT COLUMN_NAME 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = '${tableName}' 
+        AND COLUMN_KEY = 'PRI'
+      `);
+
+      const primaryKeyColumns = primaryKeyCheckResult[0];
+      let primaryKeys: any[] = [];
+      if (Array.isArray(primaryKeyColumns)) {
+        primaryKeys = primaryKeyColumns;
+      } else if (primaryKeyColumns && typeof primaryKeyColumns === "object") {
+        primaryKeys = Object.values(primaryKeyColumns);
+      }
+
+      if (primaryKeys.length === 0) {
+        logger.warn(`⚠️ 表 ${tableName} 没有主键，跳过删除主键操作`);
+        return;
+      }
+
+      logger.info(`🔍 表 ${tableName} 当前主键列: ${primaryKeys.map(pk => pk.COLUMN_NAME).join(', ')}`);
+
       // 检查是否有外键约束引用此表的主键
       const foreignKeyQueryResult = await connection.query(`
         SELECT 
