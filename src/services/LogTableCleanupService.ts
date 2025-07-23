@@ -41,11 +41,9 @@ export class LogTableCleanupService {
   public start(): void {
     // 每天凌晨2点执行清理任务
     cron.schedule("0 2 * * *", async () => {
-      logger.info("🧹 开始定时清理日志表任务");
       await this.cleanupLogTables();
     });
 
-    logger.info("🧹 日志表清理服务已启动");
   }
 
   /**
@@ -55,7 +53,6 @@ export class LogTableCleanupService {
     cron.getTasks().forEach((task) => {
       task.stop();
     });
-    logger.info("🧹 日志表清理服务已停止");
   }
 
   /**
@@ -71,7 +68,6 @@ export class LogTableCleanupService {
     const startTime = Date.now();
 
     try {
-      logger.info("🔍 开始检索需要清理的日志分表配置");
 
       // 1. 获取所有日志库的时间分表配置
       const logTimePartitionedSchemas = await TableSchema.findAll({
@@ -83,11 +79,8 @@ export class LogTableCleanupService {
       });
 
       if (logTimePartitionedSchemas.length === 0) {
-        logger.info("📋 没有找到需要清理的日志时间分表配置");
         return;
       }
-
-      logger.info(`📋 找到 ${logTimePartitionedSchemas.length} 个日志时间分表配置`);
 
       // 2. 获取所有企业
       const enterprises = await Enterprise.findAll({
@@ -95,11 +88,8 @@ export class LogTableCleanupService {
       });
 
       if (enterprises.length === 0) {
-        logger.info("🏢 没有找到激活的企业");
         return;
       }
-
-      logger.info(`🏢 找到 ${enterprises.length} 个激活企业`);
 
       let totalCleaned = 0;
       let totalMigrated = 0;
@@ -116,7 +106,7 @@ export class LogTableCleanupService {
       }
 
       const executionTime = Date.now() - startTime;
-      logger.info(`✅ 日志表清理任务完成，耗时: ${executionTime}ms，清理: ${totalCleaned} 个表，迁移: ${totalMigrated} 个配置`);
+      logger.info(`日志表清理任务完成: 清理了 ${totalCleaned} 个表，迁移了 ${totalMigrated} 个表，耗时 ${executionTime}ms`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error("❌ 日志表清理任务执行失败", { error: errorMessage });
@@ -137,7 +127,6 @@ export class LogTableCleanupService {
 
     try {
       const actualBaseTableName = this.extractBaseTableName(schema.table_name);
-      logger.info(`🔍 开始清理企业 ${enterprise.enterprise_name} 的日志表 ${actualBaseTableName} (原配置: ${schema.table_name})`);
 
       // 1. 获取数据库连接
       const connection = await this.connectionManager.getConnection(
@@ -153,29 +142,23 @@ export class LogTableCleanupService {
         return { cleaned: 0, migrated: false };
       }
 
-      logger.info(`📋 企业 ${enterprise.enterprise_name} 找到 ${existingTables.length} 个相关日志表`);
-
       // 3. 根据配置确定需要清理的表
       const tablesToCleanup = this.identifyTablesToCleanup(
         existingTables,
         schema.time_interval!,
       );
 
-      logger.info(`🗑️ 企业 ${enterprise.enterprise_name} 需要清理 ${tablesToCleanup.length} 个过期日志表`);
-
       // 4. 执行清理
       for (const tableName of tablesToCleanup) {
         const success = await this.dropTable(connection, tableName);
         if (success) {
           cleanedCount++;
-          logger.info(`✅ 删除过期日志表: ${tableName} - 企业: ${enterprise.enterprise_name}`);
         }
       }
 
       // 5. 如果有清理操作或需要确保未来表存在，执行一次迁移
       if (cleanedCount > 0 || existingTables.length > 0) {
         try {
-          logger.info(`🚀 执行迁移以确保未来日志表创建: ${schema.table_name} - 企业: ${enterprise.enterprise_name}`);
           
           await this.migrationService.migrateTable(
             schema.table_name,
@@ -186,7 +169,6 @@ export class LogTableCleanupService {
           );
           
           migrated = true;
-          logger.info(`✅ 迁移完成: ${schema.table_name} - 企业: ${enterprise.enterprise_name}`);
         } catch (migrationError) {
           logger.error(`❌ 迁移失败: ${schema.table_name} - 企业: ${enterprise.enterprise_name}`, {
             error: migrationError instanceof Error ? migrationError.message : String(migrationError)
@@ -455,6 +437,5 @@ export class LogTableCleanupService {
    */
   public updateCleanupRules(rules: Partial<typeof this.CLEANUP_RULES>) {
     Object.assign(this.CLEANUP_RULES, rules);
-    logger.info("🔧 清理规则已更新", this.CLEANUP_RULES);
   }
 }

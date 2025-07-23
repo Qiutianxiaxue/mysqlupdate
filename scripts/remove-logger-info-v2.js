@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 // 读取文件
-const filePath = path.join(__dirname, '../src/services/SchemaDetectionService.ts');
+const filePath = path.join(__dirname, '../src/services/LogTableCleanupService.ts');
 let content = fs.readFileSync(filePath, 'utf8');
 
 // 按行分割内容
