@@ -202,6 +202,9 @@ export class DatabaseMigrationService {
 
       for (const enterprise of enterprises) {
         try {
+          logger.info(
+            `🔄 企业 ${enterprise.enterprise_name} (ID: ${enterprise.enterprise_id}) 开始迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
+          );
           await this.migrateTableForEnterprise(enterprise, schema);
         } catch (error) {
           logger.error(

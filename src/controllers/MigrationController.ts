@@ -375,10 +375,10 @@ export class MigrationController {
         enterprise_id,
       } = req.body;
 
-      if (!table_name || !database_type || !partition_type) {
+      if (!table_name || !database_type) {
         res.status(400).json({
           success: false,
-          message: "缺少必需字段: table_name, database_type, partition_type",
+          message: "缺少必需字段: table_name, database_type",
         });
         return;
       }
@@ -393,7 +393,7 @@ export class MigrationController {
       }
 
       // 验证分区类型（如果提供）
-      if (!["store", "time", "none"].includes(partition_type)) {
+      if (partition_type && !["store", "time", "none"].includes(partition_type)) {
         res.status(400).json({
           success: false,
           message: "partition_type 必须是: store, time, none 之一",
@@ -418,66 +418,23 @@ export class MigrationController {
         whereCondition.schema_version = schema_version;
       }
 
-      // 查找表结构定义
-      let schema: any = null;
+      // 查找所有匹配的表结构定义
+      const allSchemas = await TableSchema.findAll({
+        where: whereCondition,
+        order: [
+          ["partition_type", "ASC"],
+          ["schema_version", "DESC"],
+        ], // 按分区类型和版本排序
+      });
 
-      if (partition_type) {
-        // 如果指定了分区类型，直接查找特定schema
-        schema = await TableSchema.findOne({
-          where: whereCondition,
-          order: [["schema_version", "DESC"]], // 如果没有指定版本，则使用最新版本
-        });
-
-        if (!schema) {
-          res.status(404).json({
-            success: false,
-            message: `表结构定义不存在: ${table_name} (${database_type}, ${partition_type})${
-              schema_version ? ` 版本 ${schema_version}` : ""
-            }`,
-          });
-          return;
-        }
-      } else {
-        // 如果没有指定分区类型，查找所有匹配的schema
-        const allSchemas = await TableSchema.findAll({
-          where: whereCondition,
-          order: [
-            ["partition_type", "ASC"],
-            ["schema_version", "DESC"],
-          ], // 按分区类型和版本排序
-        });
-
-        if (allSchemas.length === 0) {
-          res.status(404).json({
-            success: false,
-            message: `未找到表结构定义: ${table_name} (database_type: ${database_type})`,
-          });
-          return;
-        }
-
-        // 如果存在多个分区类型，需要用户明确指定
-        const uniquePartitionTypes = [
-          ...new Set(allSchemas.map((s) => s.partition_type)),
-        ];
-        if (uniquePartitionTypes.length > 1) {
-          res.status(400).json({
-            success: false,
-            message: `表 ${table_name} (${database_type}) 存在多种分区类型: [${uniquePartitionTypes.join(
-              ", "
-            )}]，请在请求中指定 partition_type 参数`,
-            available_partition_types: uniquePartitionTypes,
-          });
-          return;
-        }
-
-        // 使用找到的第一个（最新版本的）schema
-        schema = allSchemas[0];
-      }
-
-      if (!schema) {
-        res.status(500).json({
+      if (allSchemas.length === 0) {
+        res.status(404).json({
           success: false,
-          message: `数据异常：未能获取表结构定义`,
+          message: partition_type 
+            ? `表结构定义不存在: ${table_name} (${database_type}, ${partition_type})${
+                schema_version ? ` 版本 ${schema_version}` : ""
+              }`
+            : `未找到表结构定义: ${table_name} (database_type: ${database_type})`,
         });
         return;
       }
@@ -497,69 +454,115 @@ export class MigrationController {
       const migrationScope = enterprise_id
         ? `指定企业(ID: ${enterprise_id})`
         : "全企业";
-      logger.info(
-        `开始执行表 ${table_name} (${database_type}) 的${migrationScope}迁移，使用版本 ${schema.schema_version}`
-      );
 
-      // 获取迁移锁
-      const lockOperation = enterprise_id
-        ? `单表迁移(企业ID: ${enterprise_id}): ${schema.table_name} 到版本 ${schema.schema_version}`
-        : `单表迁移(全企业): ${schema.table_name} 到版本 ${schema.schema_version}`;
+      // 执行所有匹配的schema迁移
+      const migrationResults: Array<{
+        partition_type: string;
+        schema_version: string;
+        success: boolean;
+        message: string;
+        error?: string;
+        upgrade_notes?: string;
+      }> = [];
 
-      const lockResult = await this.lockService.acquireLock(
-        "SINGLE_TABLE",
-        schema.table_name,
-        schema.database_type,
-        schema.partition_type,
-        lockOperation
-      );
+      let successCount = 0;
+      let failureCount = 0;
 
-      if (!lockResult.success) {
-        res.status(409).json({
-          success: false,
-          message: `无法获取迁移锁: ${lockResult.message}`,
-          error: "MIGRATION_LOCK_CONFLICT",
-          conflict_info: lockResult.conflictLock
-            ? {
-                table_name: lockResult.conflictLock.table_name,
-                database_type: lockResult.conflictLock.database_type,
-                partition_type: lockResult.conflictLock.partition_type,
-                start_time: lockResult.conflictLock.start_time,
-                lock_holder: lockResult.conflictLock.lock_holder,
-              }
-            : undefined,
-        });
-        return;
+      for (const schema of allSchemas) {
+        try {
+          logger.info(
+            `开始执行表 ${table_name} (${database_type}, ${schema.partition_type}) 的${migrationScope}迁移，使用版本 ${schema.schema_version}`
+          );
+
+          // 获取迁移锁
+          const lockOperation = enterprise_id
+            ? `单表迁移(企业ID: ${enterprise_id}): ${schema.table_name} (${schema.partition_type}) 到版本 ${schema.schema_version}`
+            : `单表迁移(全企业): ${schema.table_name} (${schema.partition_type}) 到版本 ${schema.schema_version}`;
+
+          const lockResult = await this.lockService.acquireLock(
+            "SINGLE_TABLE",
+            schema.table_name,
+            schema.database_type,
+            schema.partition_type,
+            lockOperation
+          );
+
+          if (!lockResult.success) {
+            throw new Error(`无法获取迁移锁: ${lockResult.message}`);
+          }
+
+          const lockKey = lockResult.lock!.lock_key;
+
+          try {
+            // 执行迁移
+            await this.migrationService.migrateTable(
+              schema.table_name,
+              schema.database_type,
+              schema.schema_version,
+              schema.partition_type,
+              enterprise_id
+            );
+
+            migrationResults.push({
+              partition_type: schema.partition_type,
+              schema_version: schema.schema_version,
+              success: true,
+              message: `迁移成功到版本 ${schema.schema_version}`,
+              ...(schema.upgrade_notes && {
+                upgrade_notes: schema.upgrade_notes,
+              }),
+            });
+
+            successCount++;
+          } finally {
+            // 释放锁
+            await this.lockService.releaseLock(lockKey);
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "未知错误";
+          
+          migrationResults.push({
+            partition_type: schema.partition_type,
+            schema_version: schema.schema_version,
+            success: false,
+            message: `迁移失败`,
+            error: errorMessage,
+            ...(schema.upgrade_notes && {
+              upgrade_notes: schema.upgrade_notes,
+            }),
+          });
+
+          failureCount++;
+          logger.error(`表 ${table_name} (${database_type}, ${schema.partition_type}) 迁移失败:`, error);
+        }
       }
 
-      const lockKey = lockResult.lock!.lock_key;
-
-      try {
-        // 执行迁移
-        await this.migrationService.migrateTable(
-          schema.table_name,
-          schema.database_type,
-          schema.schema_version,
-          schema.partition_type,
-          enterprise_id // 传递企业ID参数
-        );
-      } finally {
-        // 释放锁
-        await this.lockService.releaseLock(lockKey);
-      }
+      const totalSchemas = allSchemas.length;
+      const message = allSchemas.length === 1
+        ? `表 ${table_name} (${database_type}, ${allSchemas[0]!.partition_type}) 版本 ${allSchemas[0]!.schema_version} ${migrationScope}迁移执行完成`
+        : `表 ${table_name} (${database_type}) ${migrationScope}迁移完成！成功: ${successCount}/${totalSchemas}, 失败: ${failureCount}/${totalSchemas}`;
 
       res.json({
-        success: true,
-        message: `表 ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 版本 ${schema.schema_version} ${migrationScope}迁移执行完成`,
-        data: {
-          table_name: schema.table_name,
-          database_type: schema.database_type,
-          partition_type: schema.partition_type,
-          schema_version: schema.schema_version,
-          upgrade_notes: schema.upgrade_notes,
-          migration_scope: migrationScope,
-          enterprise_id: enterprise_id || null,
-        },
+        success: failureCount === 0,
+        message,
+        data: allSchemas.length === 1
+          ? {
+              table_name: allSchemas[0]!.table_name,
+              database_type: allSchemas[0]!.database_type,
+              partition_type: allSchemas[0]!.partition_type,
+              schema_version: allSchemas[0]!.schema_version,
+              upgrade_notes: allSchemas[0]!.upgrade_notes,
+              migration_scope: migrationScope,
+              enterprise_id: enterprise_id || null,
+            }
+          : {
+              table_name,
+              database_type,
+              total_schemas: totalSchemas,
+              migration_results: migrationResults,
+              migration_scope: migrationScope,
+              enterprise_id: enterprise_id || null,
+            },
       });
     } catch (error) {
       logger.error("执行迁移失败:", error);
@@ -699,11 +702,8 @@ export class MigrationController {
 
         for (const schema of allSchemas) {
           try {
-            const tableScope = enterprise_id
-              ? `为企业 ${targetEnterprise!.enterprise_name} `
-              : "";
             // logger.info(
-            //   `${tableScope}迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
+            //   `迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
             // );
 
             // 执行迁移（传递企业ID参数）
