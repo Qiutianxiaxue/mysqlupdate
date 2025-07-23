@@ -57,7 +57,6 @@ export class SchemaDetectionService {
     databaseType: "main" | "log" | "order" | "static" = "main"
   ): Promise<TableSchemaChange | null> {
     try {
-      logger.info(`🔍 开始检测表 ${tableName} 的结构变化 (${databaseType})`);
 
       // 获取基准数据库中的表结构信息
       const currentTableInfo = await this.getCurrentTableInfo(tableName);
@@ -80,7 +79,6 @@ export class SchemaDetectionService {
       const changes = this.compareSchemas(latestSchema, newSchemaDefinition);
 
       if (changes.length === 0) {
-        logger.info(`表 ${tableName} 没有结构变化`);
         return null;
       }
 
@@ -108,7 +106,6 @@ export class SchemaDetectionService {
         result.time_format = latestSchema.time_format;
       }
 
-      logger.info(`表 ${tableName} 检测到 ${changes.length} 个变化`);
       return result;
     } catch (error) {
       logger.error(`检测表 ${tableName} 结构变化失败:`, error);
@@ -128,7 +125,6 @@ export class SchemaDetectionService {
     databaseType: "main" | "log" | "order" | "static" = "main"
   ): Promise<TableSchemaChange | null> {
     try {
-      logger.info(`🔍 开始检测表 ${fullTableName} 的结构变化 (${databaseType})`);
 
       // 使用完整表名获取基准数据库中的表结构信息
       const currentTableInfo = await this.getCurrentTableInfo(fullTableName);
@@ -162,7 +158,6 @@ export class SchemaDetectionService {
       const changes = this.compareSchemas(latestSchema, newSchemaDefinition);
 
       if (changes.length === 0) {
-        logger.info(`表 ${fullTableName} 没有结构变化`);
         return null;
       }
 
@@ -193,7 +188,6 @@ export class SchemaDetectionService {
         result.time_format = timeFormat;
       }
 
-      logger.info(`表 ${fullTableName} (${cleanTableName}) 检测到 ${changes.length} 个变化`);
       return result;
     } catch (error) {
       logger.error(`检测表 ${fullTableName} 结构变化失败:`, error);
@@ -224,7 +218,6 @@ export class SchemaDetectionService {
     };
   }> {
     try {
-      logger.info(`🔍 开始检测所有数据库类型的表结构变化`);
 
       // 获取基准数据库中的所有表
       const baseDbTables = await this.getAllTableNames();
@@ -281,16 +274,13 @@ export class SchemaDetectionService {
         tablesByDbType[parsed.databaseType].push(fullTableName);
       }
 
-      logger.info(`基准库表分布统计:`);
-      for (const [dbType, tables] of Object.entries(tablesByDbType)) {
+      for (const [_dbType, tables] of Object.entries(tablesByDbType)) {
         if (tables) {
-          logger.info(`  - ${dbType}: ${tables.length} 个表`);
         }
       }
 
       // 按数据库类型检测
       for (const databaseType of databaseTypes) {
-        logger.info(`检测 ${databaseType} 数据库类型...`);
 
         const typeSchemaDefinitions = allSchemaDefinitions.filter(
           (s) => s.database_type === databaseType
@@ -305,10 +295,6 @@ export class SchemaDetectionService {
             relevantBaseTables,
             typeSchemaDefinitions
           );
-
-        logger.info(
-          `${databaseType} - 新表: ${newTables.length}, 需要删除处理: ${deletedTables.length}, 检查: ${existingTables.length}`
-        );
 
         const typeResults: TableSchemaChange[] = [];
 
@@ -399,10 +385,6 @@ export class SchemaDetectionService {
         by_database_type: byDatabaseType,
       };
 
-      logger.info(
-        `全部检测完成 - 总计检查: ${summary.total_checked}, 变化: ${summary.changes_detected}, 新表: ${summary.new_tables}, 删除: ${summary.deleted_tables}`
-      );
-
       return {
         changes: allResults,
         newTables: allNewTables,
@@ -423,7 +405,6 @@ export class SchemaDetectionService {
     databaseType: "main" | "log" | "order" | "static"
   ): Promise<TableSchemaChange | null> {
     try {
-      logger.info(`为新表 ${originalTableName} 生成schema定义`);
 
       // 解析表名和数据库类型（parseTableName已经移除了分表规则）
       const parsed = this.parseTableName(originalTableName);
@@ -484,9 +465,6 @@ export class SchemaDetectionService {
         }
       }
 
-      logger.info(
-        `成功为新表 ${originalTableName} 生成schema定义 - 最终表名: ${cleanTableName}, 数据库类型: ${finalDatabaseType}, 分表类型: ${partitionInfo.partition_type}`
-      );
       return result;
     } catch (error) {
       logger.error(`为新表 ${originalTableName} 生成schema定义失败:`, error);
@@ -502,7 +480,6 @@ export class SchemaDetectionService {
     databaseType: "main" | "log" | "order" | "static"
   ): Promise<TableSchemaChange | null> {
     try {
-      logger.info(`处理删除表 ${tableName} 的配置`);
 
       // 获取该表在TableSchema中的最新版本
       const latestSchema = await this.getLatestTableSchema(
@@ -522,9 +499,6 @@ export class SchemaDetectionService {
 
         // 如果最新版本已经是删除操作，不需要生成新的版本
         if (existingDefinition.action === "DROP") {
-          logger.info(
-            `表 ${tableName} 已配置为删除 (版本 ${latestSchema.schema_version})，无需重新生成`
-          );
           return null;
         }
       } catch (error) {
@@ -561,9 +535,6 @@ export class SchemaDetectionService {
         result.time_format = latestSchema.time_format;
       }
 
-      logger.info(
-        `成功为删除表 ${tableName} 生成删除配置，版本: ${newVersion}`
-      );
       return result;
     } catch (error) {
       logger.error(`处理删除表 ${tableName} 失败:`, error);
@@ -885,10 +856,6 @@ export class SchemaDetectionService {
     const baseTableName = tableName.replace(/^qc_/, "");
     const expectedPrimaryKeyName = `${baseTableName}_id`;
 
-    logger.info(
-      `🔍 为表 ${tableName} 识别正确主键，期望主键名: ${expectedPrimaryKeyName}`
-    );
-
     // 2. 查找符合命名规范的主键字段
     const expectedPrimaryKeyColumn = columns.find(
       (col) => col.column_name === expectedPrimaryKeyName
@@ -903,9 +870,6 @@ export class SchemaDetectionService {
       );
 
       if (isIntType && isAutoIncrement) {
-        logger.info(
-          `✅ 字段 ${expectedPrimaryKeyName} 满足主键条件（${expectedPrimaryKeyColumn.data_type}，自增）`
-        );
         return expectedPrimaryKeyName;
       } else {
         logger.warn(
@@ -915,7 +879,6 @@ export class SchemaDetectionService {
     }
 
     // 4. 如果没找到符合命名规范的，查找其他可能的主键字段
-    logger.info(`🔄 没找到标准主键，查找其他可能的主键字段...`);
 
     // 查找自增的整型字段
     const autoIncrementColumns = columns.filter(
@@ -927,9 +890,6 @@ export class SchemaDetectionService {
     );
 
     if (autoIncrementColumns.length === 1 && autoIncrementColumns[0]) {
-      logger.info(
-        `✅ 找到唯一的自增字段作为主键: ${autoIncrementColumns[0].column_name}`
-      );
       return autoIncrementColumns[0].column_name;
     }
 
@@ -1066,23 +1026,6 @@ export class SchemaDetectionService {
    * 生成schema定义
    */
   private generateSchemaDefinition(tableInfo: any) {
-    // 先分析主键情况
-    const primaryKeyColumns = tableInfo.columns.filter(
-      (col: ColumnInfo) => col.column_key === "PRI"
-    );
-    const hasSinglePrimaryKey = primaryKeyColumns.length === 1;
-    const hasCompositePrimaryKey = primaryKeyColumns.length > 1;
-
-    logger.info(
-      `表 ${tableInfo.tableName} 主键分析: 主键列数=${primaryKeyColumns.length}, 单一主键=${hasSinglePrimaryKey}, 复合主键=${hasCompositePrimaryKey}`
-    );
-    if (primaryKeyColumns.length > 0) {
-      const primaryKeyNames = primaryKeyColumns.map(
-        (col: ColumnInfo) => col.column_name
-      );
-      logger.info(`原始主键列: [${primaryKeyNames.join(", ")}]`);
-    }
-
     // 智能主键识别：根据命名规范确定真正的主键
     const correctPrimaryKey = this.identifyCorrectPrimaryKey(
       tableInfo.tableName,
@@ -1136,11 +1079,6 @@ export class SchemaDetectionService {
       // 使用智能识别的主键，而不是数据库中错误的复合主键设计
       if (col.column_name === correctPrimaryKey) {
         column.primaryKey = true;
-        logger.info(
-          `✅ 设置正确的主键: ${
-            col.column_name
-          }（符合 ${tableInfo.tableName.replace("qc_", "")}_id 规范）`
-        );
       } else if (
         col.column_key === "PRI" &&
         col.column_name !== correctPrimaryKey
@@ -1443,7 +1381,6 @@ export class SchemaDetectionService {
    */
   async saveDetectedChanges(changes: TableSchemaChange[]): Promise<void> {
     try {
-      logger.info(`开始保存 ${changes.length} 个表结构变化`);
 
       for (const change of changes) {
         // 将旧版本标记为非激活
@@ -1483,7 +1420,6 @@ export class SchemaDetectionService {
 
         await TableSchema.create(createData);
 
-        logger.info(`保存表 ${change.table_name} 新版本 ${change.new_version}`);
       }
     } catch (error) {
       logger.error("保存表结构变化失败:", error);
@@ -1565,9 +1501,6 @@ export class SchemaDetectionService {
     // 检测门店分表
     if (workingName.includes("#store")) {
       const cleanTableName = workingName.replace("#store", "");
-      logger.info(
-        `表 ${tableName} 检测为门店分表，清理后表名: ${cleanTableName}`
-      );
       return {
         cleanTableName,
         partition_type: "store",
@@ -1577,9 +1510,6 @@ export class SchemaDetectionService {
     // 检测时间分表
     if (workingName.includes("#time_day")) {
       const cleanTableName = workingName.replace("#time_day", "");
-      logger.info(
-        `表 ${tableName} 检测为按天时间分表，清理后表名: ${cleanTableName}`
-      );
       return {
         cleanTableName,
         partition_type: "time",
@@ -1590,9 +1520,6 @@ export class SchemaDetectionService {
 
     if (workingName.includes("#time_month")) {
       const cleanTableName = workingName.replace("#time_month", "");
-      logger.info(
-        `表 ${tableName} 检测为按月时间分表，清理后表名: ${cleanTableName}`
-      );
       return {
         cleanTableName,
         partition_type: "time",
@@ -1603,9 +1530,6 @@ export class SchemaDetectionService {
 
     if (workingName.includes("#time_year")) {
       const cleanTableName = workingName.replace("#time_year", "");
-      logger.info(
-        `表 ${tableName} 检测为按年时间分表，清理后表名: ${cleanTableName}`
-      );
       return {
         cleanTableName,
         partition_type: "time",

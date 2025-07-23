@@ -147,12 +147,6 @@ class InitialDataTemplateController {
         is_enabled: Boolean(is_enabled),
       });
 
-      logger.info(`创建初始数据模板成功`, {
-        templateId: template.template_id,
-        templateName: template.template_name,
-        templateVersion: template.template_version,
-      });
-
       return res.status(201).json({
         success: true,
         message: "创建初始数据模板成功",
@@ -244,11 +238,6 @@ class InitialDataTemplateController {
 
       await template.update(updateData);
 
-      logger.info(`更新初始数据模板成功`, {
-        templateId: template.template_id,
-        templateName: template.template_name,
-      });
-
       return res.status(200).json({
         success: true,
         message: "更新初始数据模板成功",
@@ -300,8 +289,6 @@ class InitialDataTemplateController {
 
       // 删除模板
       await template.destroy();
-
-      logger.info(`删除初始数据模板成功`, templateInfo);
 
       return res.status(200).json({
         success: true,
@@ -355,12 +342,6 @@ class InitialDataTemplateController {
 
       // 更新状态
       await template.update({ is_enabled: Boolean(is_enabled) });
-
-      logger.info(`${is_enabled ? "启用" : "禁用"}初始数据模板成功`, {
-        templateId: template.template_id,
-        templateName: template.template_name,
-        isEnabled: is_enabled,
-      });
 
       return res.status(200).json({
         success: true,

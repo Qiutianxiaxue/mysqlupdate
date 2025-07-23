@@ -32,7 +32,6 @@ export class SchemaDetectionController {
         return;
       }
 
-
       const result = await this.detectionService.detectTableChanges(
         tableName,
         databaseType
@@ -169,7 +168,6 @@ export class SchemaDetectionController {
         return;
       }
 
-
       await this.detectionService.saveDetectedChanges(changes);
 
       res.json({
@@ -299,7 +297,6 @@ export class SchemaDetectionController {
         });
         return;
       }
-
 
       // 获取列信息
       const columnsQuery = `

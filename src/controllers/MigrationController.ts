@@ -176,9 +176,6 @@ export class MigrationController {
         // 将旧版本标记为非活跃
         await existingSchema.update({ is_active: false });
 
-        logger.info(
-          `表定义升级成功: ${table_name} (${database_type}, ${partition_type}) 从版本 ${existingSchema.schema_version} 升级到 ${schema_version}`
-        );
       } else {
         // 全新创建
         const createData: any = {
@@ -197,9 +194,6 @@ export class MigrationController {
 
         schema = await TableSchema.create(createData);
 
-        logger.info(
-          `新表定义创建成功: ${table_name} (${database_type}, ${partition_type}) 版本 ${schema_version}`
-        );
       }
 
       res.status(201).json({
@@ -470,9 +464,6 @@ export class MigrationController {
 
       for (const schema of allSchemas) {
         try {
-          logger.info(
-            `开始执行表 ${table_name} (${database_type}, ${schema.partition_type}) 的${migrationScope}迁移，使用版本 ${schema.schema_version}`
-          );
 
           // 获取迁移锁
           const lockOperation = enterprise_id
@@ -614,8 +605,6 @@ export class MigrationController {
         ? `指定企业 ${targetEnterprise!.enterprise_name} (ID: ${enterprise_id})`
         : "全企业";
 
-      logger.info(`开始${migrationScope}一键迁移所有已确认的表`);
-
       // 获取全量迁移锁
       const lockOperation = enterprise_id
         ? `一键迁移所有表(企业ID: ${enterprise_id}): ${
@@ -681,10 +670,6 @@ export class MigrationController {
           return;
         }
 
-        logger.info(
-          `找到 ${allSchemas.length} 个表结构定义需要为${migrationScope}迁移`
-        );
-
         // 2. 对每个表结构定义执行迁移
         const migrationResults: Array<{
           table_name: string;
@@ -702,9 +687,6 @@ export class MigrationController {
 
         for (const schema of allSchemas) {
           try {
-            // logger.info(
-            //   `迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
-            // );
 
             // 执行迁移（传递企业ID参数）
             await this.migrationService.migrateTable(
@@ -728,7 +710,6 @@ export class MigrationController {
             });
 
             successCount++;
-            // logger.info(`✅ ${tableScope}表 ${schema.table_name} 迁移成功`);
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : "未知错误";
@@ -799,7 +780,6 @@ export class MigrationController {
           },
         });
 
-        logger.info(message);
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
@@ -1191,10 +1171,6 @@ export class MigrationController {
 
       const migrationScope = `企业 ${targetEnterprise.enterprise_name}`;
 
-      logger.info(
-        `开始为${migrationScope}的门店 ${store_id} 执行门店分表迁移...`
-      );
-
       // 获取锁
       const lockResult = await this.lockService.acquireLock(
         "SINGLE_TABLE",
@@ -1255,10 +1231,6 @@ export class MigrationController {
           return;
         }
 
-        logger.info(
-          `找到 ${storeSchemas.length} 个门店分表结构定义需要为门店 ${store_id} 迁移`
-        );
-
         // 2. 对每个门店分表结构定义执行迁移
         const migrationResults: Array<{
           table_name: string;
@@ -1278,10 +1250,6 @@ export class MigrationController {
         for (const schema of storeSchemas) {
           try {
             const actualTableName = `${schema.table_name}${store_id}`;
-
-            logger.info(
-              `为企业 ${targetEnterprise.enterprise_name} 的门店 ${store_id} 迁移表: ${schema.table_name} -> ${actualTableName} (${schema.database_type}) 到版本 ${schema.schema_version}`
-            );
 
             // 执行迁移（传递企业ID参数）
             await this.migrationService.migrateStoreTable(
@@ -1306,9 +1274,6 @@ export class MigrationController {
             });
 
             successCount++;
-            logger.info(
-              `✅ 企业 ${targetEnterprise.enterprise_name} 门店 ${store_id} 的表 ${actualTableName} 迁移成功`
-            );
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : "未知错误";
@@ -1379,7 +1344,6 @@ export class MigrationController {
           },
         });
 
-        logger.info(message);
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
@@ -1416,9 +1380,6 @@ export class MigrationController {
         enterprise.enterprise_id
       );
 
-      logger.info(
-        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 的门店 ${storeId} 表 ${schema.table_name} 迁移成功`
-      );
     } catch (error) {
       logger.error(
         `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`,
@@ -1468,8 +1429,6 @@ export class MigrationController {
       const migrationScope = enterprise_id
         ? `指定企业 ${targetEnterprise!.enterprise_name} (ID: ${enterprise_id})`
         : "全企业";
-
-      logger.info(`开始${migrationScope}一键迁移检查，预览所有SQL语句`);
 
       // 获取全量迁移锁（检查模式，防止与实际迁移冲突）
       const lockOperation = enterprise_id
@@ -1533,7 +1492,6 @@ export class MigrationController {
           },
         });
 
-        logger.info(message);
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
