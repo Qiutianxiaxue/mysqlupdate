@@ -4,6 +4,7 @@ import { MigrationLockService } from "@/services/MigrationLockService";
 import TableSchema from "@/models/TableSchema";
 import Enterprise from "@/models/Enterprise";
 import logger from "@/utils/logger";
+import { Op } from "sequelize";
 
 export class MigrationController {
   private migrationService: DatabaseMigrationService;
@@ -175,7 +176,6 @@ export class MigrationController {
 
         // 将旧版本标记为非活跃
         await existingSchema.update({ is_active: false });
-
       } else {
         // 全新创建
         const createData: any = {
@@ -193,7 +193,6 @@ export class MigrationController {
         if (time_format) createData.time_format = time_format;
 
         schema = await TableSchema.create(createData);
-
       }
 
       res.status(201).json({
@@ -387,7 +386,10 @@ export class MigrationController {
       }
 
       // 验证分区类型（如果提供）
-      if (partition_type && !["store", "time", "none"].includes(partition_type)) {
+      if (
+        partition_type &&
+        !["store", "time", "none"].includes(partition_type)
+      ) {
         res.status(400).json({
           success: false,
           message: "partition_type 必须是: store, time, none 之一",
@@ -397,7 +399,12 @@ export class MigrationController {
 
       // 构建查询条件
       const whereCondition: any = {
-        table_name,
+        table_name: {
+          [Op.or]: [
+            table_name, // 精确匹配表名
+            { [Op.like]: table_name + "__%", }, // 模糊匹配带分区后缀的表名
+          ],
+        },
         database_type,
         is_active: true,
       };
@@ -419,12 +426,15 @@ export class MigrationController {
           ["partition_type", "ASC"],
           ["schema_version", "DESC"],
         ], // 按分区类型和版本排序
+        logging: (msg) => logger.info(`Sequelize: ${msg}`),
       });
-
+      logger.info(
+        `🗂️ 查找到表结构定义: ${JSON.stringify(allSchemas, null, 2)}`
+      );
       if (allSchemas.length === 0) {
         res.status(404).json({
           success: false,
-          message: partition_type 
+          message: partition_type
             ? `表结构定义不存在: ${table_name} (${database_type}, ${partition_type})${
                 schema_version ? ` 版本 ${schema_version}` : ""
               }`
@@ -464,7 +474,6 @@ export class MigrationController {
 
       for (const schema of allSchemas) {
         try {
-
           // 获取迁移锁
           const lockOperation = enterprise_id
             ? `单表迁移(企业ID: ${enterprise_id}): ${schema.table_name} (${schema.partition_type}) 到版本 ${schema.schema_version}`
@@ -510,8 +519,9 @@ export class MigrationController {
             await this.lockService.releaseLock(lockKey);
           }
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : "未知错误";
-          
+          const errorMessage =
+            error instanceof Error ? error.message : "未知错误";
+
           migrationResults.push({
             partition_type: schema.partition_type,
             schema_version: schema.schema_version,
@@ -524,36 +534,45 @@ export class MigrationController {
           });
 
           failureCount++;
-          logger.error(`表 ${table_name} (${database_type}, ${schema.partition_type}) 迁移失败:`, error);
+          logger.error(
+            `表 ${table_name} (${database_type}, ${schema.partition_type}) 迁移失败:`,
+            error
+          );
         }
       }
 
       const totalSchemas = allSchemas.length;
-      const message = allSchemas.length === 1
-        ? `表 ${table_name} (${database_type}, ${allSchemas[0]!.partition_type}) 版本 ${allSchemas[0]!.schema_version} ${migrationScope}迁移执行完成`
-        : `表 ${table_name} (${database_type}) ${migrationScope}迁移完成！成功: ${successCount}/${totalSchemas}, 失败: ${failureCount}/${totalSchemas}`;
+      const message =
+        allSchemas.length === 1
+          ? `表 ${table_name} (${database_type}, ${
+              allSchemas[0]!.partition_type
+            }) 版本 ${
+              allSchemas[0]!.schema_version
+            } ${migrationScope}迁移执行完成`
+          : `表 ${table_name} (${database_type}) ${migrationScope}迁移完成！成功: ${successCount}/${totalSchemas}, 失败: ${failureCount}/${totalSchemas}`;
 
       res.json({
         success: failureCount === 0,
         message,
-        data: allSchemas.length === 1
-          ? {
-              table_name: allSchemas[0]!.table_name,
-              database_type: allSchemas[0]!.database_type,
-              partition_type: allSchemas[0]!.partition_type,
-              schema_version: allSchemas[0]!.schema_version,
-              upgrade_notes: allSchemas[0]!.upgrade_notes,
-              migration_scope: migrationScope,
-              enterprise_id: enterprise_id || null,
-            }
-          : {
-              table_name,
-              database_type,
-              total_schemas: totalSchemas,
-              migration_results: migrationResults,
-              migration_scope: migrationScope,
-              enterprise_id: enterprise_id || null,
-            },
+        data:
+          allSchemas.length === 1
+            ? {
+                table_name: allSchemas[0]!.table_name,
+                database_type: allSchemas[0]!.database_type,
+                partition_type: allSchemas[0]!.partition_type,
+                schema_version: allSchemas[0]!.schema_version,
+                upgrade_notes: allSchemas[0]!.upgrade_notes,
+                migration_scope: migrationScope,
+                enterprise_id: enterprise_id || null,
+              }
+            : {
+                table_name,
+                database_type,
+                total_schemas: totalSchemas,
+                migration_results: migrationResults,
+                migration_scope: migrationScope,
+                enterprise_id: enterprise_id || null,
+              },
       });
     } catch (error) {
       logger.error("执行迁移失败:", error);
@@ -687,7 +706,6 @@ export class MigrationController {
 
         for (const schema of allSchemas) {
           try {
-
             // 执行迁移（传递企业ID参数）
             await this.migrationService.migrateTable(
               schema.table_name,
@@ -779,7 +797,6 @@ export class MigrationController {
             by_database_type: byDatabaseType,
           },
         });
-
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
@@ -1343,7 +1360,6 @@ export class MigrationController {
             by_database_type: byDatabaseType,
           },
         });
-
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
@@ -1379,7 +1395,6 @@ export class MigrationController {
         storeId,
         enterprise.enterprise_id
       );
-
     } catch (error) {
       logger.error(
         `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`,
@@ -1491,7 +1506,6 @@ export class MigrationController {
             by_enterprise: checkResult.summary_by_enterprise,
           },
         });
-
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);

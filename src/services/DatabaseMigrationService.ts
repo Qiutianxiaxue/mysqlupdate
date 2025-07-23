@@ -202,9 +202,6 @@ export class DatabaseMigrationService {
 
       for (const enterprise of enterprises) {
         try {
-          logger.info(
-            `🔄 企业 ${enterprise.enterprise_name} (ID: ${enterprise.enterprise_id}) 开始迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
-          );
           await this.migrateTableForEnterprise(enterprise, schema);
         } catch (error) {
           logger.error(
@@ -507,7 +504,7 @@ export class DatabaseMigrationService {
     } else if (interval === "year") {
       endDate = new Date(now.getFullYear(), now.getMonth() + 13, 0); // 12个月后
     }
-
+    logger.info(`🗓️ 迁移时间分表: ${tableDefinition.tableName} - 开始时间: ${startDate} - 结束时间: ${endDate}`);
     await this.migrateTimePartitionedTable(
       connection,
       tableDefinition,

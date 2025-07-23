@@ -9,10 +9,12 @@ import migrationVersionRoutes from "@/routes/migrationVersion";
 import initialDataRoutes from "@/routes/initialData";
 import initialDataTemplateRoutes from "@/routes/initialDataTemplate";
 import tableScheduleRoutes from "@/routes/tableSchedule";
+import logCleanupRoutes from "@/routes/logCleanup";
 import { syncDatabase } from "@/models";
 import { testBaseConnection, getBaseDatabaseInfo } from "@/config/baseDatabase";
 import { MigrationLockService } from "@/services/MigrationLockService";
 import { TableScheduleServiceV2 } from "@/services/TableScheduleServiceV2";
+import { LogTableCleanupService } from "@/services/LogTableCleanupService";
 import logger from "@/utils/logger";
 
 dotenv.config();
@@ -34,6 +36,7 @@ app.use("/api/migration-version", migrationVersionRoutes);
 app.use("/api/initial-data", initialDataRoutes);
 app.use("/api/initial-data-template", initialDataTemplateRoutes);
 app.use("/api/table-schedule", tableScheduleRoutes);
+app.use("/api/log-cleanup", logCleanupRoutes);
 
 // 健康检查
 app.get("/health", (req, res) => {
@@ -56,6 +59,8 @@ app.get("/", (req, res) => {
       migrationVersion: "/api/migration-version",
       initialData: "/api/initial-data",
       initialDataTemplate: "/api/initial-data-template",
+      tableSchedule: "/api/table-schedule",
+      logCleanup: "/api/log-cleanup",
     },
   });
 });
@@ -104,6 +109,11 @@ export const startServer = async () => {
     logger.info("正在启动表定时检测服务...");
     const tableScheduleService = TableScheduleServiceV2.getInstance();
     tableScheduleService.start();
+
+    // 启动日志表清理服务
+    logger.info("正在启动日志表清理服务...");
+    const logCleanupService = LogTableCleanupService.getInstance();
+    logCleanupService.start();
 
     // 测试基准数据库连接
     await testBaseConnection();
