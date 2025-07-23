@@ -8,9 +8,11 @@ import schemaDetectionRoutes from "@/routes/schemaDetection";
 import migrationVersionRoutes from "@/routes/migrationVersion";
 import initialDataRoutes from "@/routes/initialData";
 import initialDataTemplateRoutes from "@/routes/initialDataTemplate";
+import tableScheduleRoutes from "@/routes/tableSchedule";
 import { syncDatabase } from "@/models";
 import { testBaseConnection, getBaseDatabaseInfo } from "@/config/baseDatabase";
 import { MigrationLockService } from "@/services/MigrationLockService";
+import { TableScheduleServiceV2 } from "@/services/TableScheduleServiceV2";
 import logger from "@/utils/logger";
 
 dotenv.config();
@@ -31,6 +33,7 @@ app.use("/api/schema-detection", schemaDetectionRoutes);
 app.use("/api/migration-version", migrationVersionRoutes);
 app.use("/api/initial-data", initialDataRoutes);
 app.use("/api/initial-data-template", initialDataTemplateRoutes);
+app.use("/api/table-schedule", tableScheduleRoutes);
 
 // 健康检查
 app.get("/health", (req, res) => {
@@ -96,6 +99,11 @@ export const startServer = async () => {
     } else {
       logger.info("没有发现需要清理的迁移锁");
     }
+
+    // 启动表定时检测服务
+    logger.info("正在启动表定时检测服务...");
+    const tableScheduleService = TableScheduleServiceV2.getInstance();
+    tableScheduleService.start();
 
     // 测试基准数据库连接
     await testBaseConnection();

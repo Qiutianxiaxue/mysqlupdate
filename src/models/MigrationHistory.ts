@@ -58,7 +58,7 @@ MigrationHistory.init(
       comment: "企业ID，标识该迁移记录属于哪个企业",
     },
     table_name: {
-      type: DataTypes.STRING(100),
+      type: DataTypes.STRING(255),
       allowNull: false,
       comment: "迁移的表名",
     },

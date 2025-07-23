@@ -48,6 +48,13 @@
 - **时间分表**：按时间周期创建分表，支持年/月/日格式
 - **混合分区**：支持复杂的分区策略组合
 
+### 🕒 定时检测服务
+
+- **自动表检测**：每天凌晨0点自动检测按日期分表的表是否存在
+- **预创建表**：提前创建今天和明天、本月和下月、本年和明年的表
+- **防止断表**：避免当天表不存在导致的数据写入失败
+- **手动触发**：支持手动触发检测任务，便于测试和紧急处理
+
 ### 🛡️ 安全可靠
 
 - **事务支持**：关键操作使用数据库事务保证一致性
@@ -374,6 +381,48 @@ GET /api/migration/connections/stats
 
 ```http
 POST /api/migration/connections/close
+```
+
+### 🕒 表定时检测
+
+#### 手动触发表检测
+
+```http
+POST /api/table-schedule/manual-check
+```
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "message": "手动检测任务执行成功",
+  "data": {
+    "executionTime": 2540,
+    "checkedTables": 8,
+    "createdTables": 3
+  }
+}
+```
+
+#### 获取定时任务状态
+
+```http
+GET /api/table-schedule/status
+```
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "message": "获取定时任务状态成功",
+  "data": {
+    "scheduledTasks": 1,
+    "isServiceRunning": true,
+    "nextExecutionTime": "每天 00:00:00"
+  }
+}
 ```
 
 ## 🔍 表结构检测

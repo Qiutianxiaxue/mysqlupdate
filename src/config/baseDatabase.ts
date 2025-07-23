@@ -16,7 +16,7 @@ const baseSequelize = new Sequelize({
     process.env.BASE_DB_NAME || process.env.DB_NAME || "base_schema_database",
   username: process.env.BASE_DB_USER || process.env.DB_USER || "root",
   password: process.env.BASE_DB_PASSWORD || process.env.DB_PASSWORD || "123456",
-  logging: process.env.NODE_ENV === "development" ? console.log : false,
+  logging: false,
   pool: {
     max: 5,
     min: 0,

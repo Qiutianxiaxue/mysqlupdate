@@ -702,9 +702,9 @@ export class MigrationController {
             const tableScope = enterprise_id
               ? `为企业 ${targetEnterprise!.enterprise_name} `
               : "";
-            logger.info(
-              `${tableScope}迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
-            );
+            // logger.info(
+            //   `${tableScope}迁移表: ${schema.table_name} (${schema.database_type}, ${schema.partition_type}) 到版本 ${schema.schema_version}`
+            // );
 
             // 执行迁移（传递企业ID参数）
             await this.migrationService.migrateTable(
@@ -728,7 +728,7 @@ export class MigrationController {
             });
 
             successCount++;
-            logger.info(`✅ ${tableScope}表 ${schema.table_name} 迁移成功`);
+            // logger.info(`✅ ${tableScope}表 ${schema.table_name} 迁移成功`);
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : "未知错误";

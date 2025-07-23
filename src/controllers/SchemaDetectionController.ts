@@ -201,7 +201,7 @@ export class SchemaDetectionController {
    */
   getBaseTables = async (req: Request, res: Response): Promise<void> => {
     try {
-      logger.info("获取基准数据库中的所有表信息");
+      // logger.info("获取基准数据库中的所有表信息");
 
       // 使用service的私有方法，这里需要创建一个公共方法
       const query = `
