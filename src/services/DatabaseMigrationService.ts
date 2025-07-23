@@ -817,7 +817,7 @@ export class DatabaseMigrationService {
         }
 
         const existingColumnsQueryResult = await connection.query(
-          "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION",
+          "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ORDINAL_POSITION",
           {
             replacements: [actualDbName, tableName],
             type: "SELECT",
@@ -1093,7 +1093,6 @@ export class DatabaseMigrationService {
     definedColumns: ColumnDefinition[],
     existingColumnNames: string[]
   ): Promise<void> {
-
     for (const column of definedColumns) {
       // 使用不区分大小写的比较
       const columnExists = existingColumnNames.some(
@@ -1141,7 +1140,8 @@ export class DatabaseMigrationService {
         currentComment = String(currentComment).trim(); // 去除前后空格
       }
 
-      const currentType = existingColumn.DATA_TYPE || existingColumn.Type || "";
+      const currentFullType =
+        existingColumn.COLUMN_TYPE || existingColumn.Type || "";
       const currentNullable =
         (
           existingColumn.IS_NULLABLE ||
@@ -1200,31 +1200,41 @@ export class DatabaseMigrationService {
           updateReasons.push(
             `default: "${currentDefault}" (${typeof currentDefault}) → "${expectedDefault}" (${typeof expectedDefault})`
           );
+          
+          // 添加详细的默认值调试信息
+          logger.info(`🔍 默认值详细比较 - 列: ${columnName}`);
+          logger.info(`  📊 数据库原始值: "${currentDefault}" (类型: ${typeof currentDefault})`);
+          logger.info(`  📊 配置原始值: "${expectedDefault}" (类型: ${typeof expectedDefault})`);
+          logger.info(`  📊 标准化后 - 数据库: "${normalizedCurrent}"`);
+          logger.info(`  📊 标准化后 - 配置: "${normalizedExpected}"`);
+          logger.info(`  📊 比较结果: ${normalizedCurrent === normalizedExpected ? '相等' : '不相等'}`);
         }
       }
 
       // 检查数据类型（包含ENUM/SET的特殊处理）
       const expectedDataType = this.getDataType(definedColumn).toUpperCase();
-      const normalizedCurrentType = this.normalizeDataType(currentType);
-      const normalizedExpectedType = this.normalizeDataType(expectedDataType);
 
       // 特殊处理ENUM和SET类型
-      const definedType = definedColumn.type.toUpperCase();
+      const definedType = definedColumn.type.toUpperCase(); // 配置中定义的类型名称：'ENUM' 或 'SET'
       if (definedType === "ENUM" || definedType === "SET") {
         // 使用专门的ENUM比较方法
-        const currentFullType =
-          existingColumn.COLUMN_TYPE || existingColumn.Type || "";
+        // currentFullType 是数据库中的完整类型定义，包含所有枚举值
+        // 例如：'enum(\'active\',\'inactive\',\'pending\')'
         if (this.isEnumTypeNeedsUpdate(currentFullType, definedColumn)) {
           needsUpdate = true;
           updateReasons.push(
             `${definedType} values: ${currentFullType} → ${expectedDataType}`
           );
         }
-      } else if (normalizedCurrentType !== normalizedExpectedType) {
-        needsUpdate = true;
-        updateReasons.push(
-          `type: ${normalizedCurrentType} → ${normalizedExpectedType}`
-        );
+      } else {
+        // 对于非ENUM/SET类型，比较完整的类型定义
+        const normalizedCurrentType = this.normalizeDataType(currentFullType);
+        const normalizedExpectedType = this.normalizeDataType(expectedDataType);
+
+        if (normalizedCurrentType !== normalizedExpectedType) {
+          needsUpdate = true;
+          updateReasons.push(`type: ${currentFullType} → ${expectedDataType}`);
+        }
       }
 
       // 检查主键属性
@@ -1246,6 +1256,39 @@ export class DatabaseMigrationService {
       }
 
       if (needsUpdate) {
+        // 当检测到需要更新时，打印详细的调试信息
+        logger.info(`🔍 列 ${columnName} 需要更新，详细信息:`);
+        logger.info(
+          `  📊 数据库 DATA_TYPE: "${
+            existingColumn.DATA_TYPE || existingColumn.Type || ""
+          }"`
+        );
+        logger.info(`  📊 数据库 COLUMN_TYPE: "${currentFullType}"`);
+        logger.info(`  📊 期望类型: "${this.getDataType(definedColumn)}"`);
+        logger.info(`  📊 更新原因: ${updateReasons.join(", ")}`);
+
+        // 如果涉及默认值差异，显示标准化后的比较结果
+        if (updateReasons.some(reason => reason.includes('default:'))) {
+          const expectedDefault = definedColumn.defaultValue;
+          if (expectedDefault !== undefined) {
+            const normalizedCurrent = this.normalizeDefaultValue(currentDefault);
+            const normalizedExpected = this.normalizeDefaultValue(expectedDefault);
+            logger.info(`  📊 默认值标准化 - 当前: "${normalizedCurrent}", 期望: "${normalizedExpected}"`);
+          }
+        }
+
+        // 如果是数据类型差异，显示标准化后的比较结果
+        const expectedDataType = this.getDataType(definedColumn).toUpperCase();
+        const definedType = definedColumn.type.toUpperCase();
+        if (definedType !== "ENUM" && definedType !== "SET") {
+          const normalizedCurrentType = this.normalizeDataType(currentFullType);
+          const normalizedExpectedType =
+            this.normalizeDataType(expectedDataType);
+          logger.info(
+            `  📊 标准化后 - 当前: "${normalizedCurrentType}", 期望: "${normalizedExpectedType}"`
+          );
+        }
+
         try {
           // 分步处理主键变更
           await this.handlePrimaryKeyChanges(
@@ -1416,22 +1459,18 @@ export class DatabaseMigrationService {
 
           const removeAutoIncSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${columnDefinition}`;
 
-          try {
-            if (this.currentSchema) {
-              await this.executeAndRecordSql(
-                connection,
-                tableName,
-                this.currentSchema.database_type,
-                this.currentSchema.partition_type,
-                this.currentSchema.schema_version,
-                "ALTER",
-                removeAutoIncSQL
-              );
-            } else {
-              await connection.query(removeAutoIncSQL);
-            }
-          } catch (error) {
-            throw error;
+          if (this.currentSchema) {
+            await this.executeAndRecordSql(
+              connection,
+              tableName,
+              this.currentSchema.database_type,
+              this.currentSchema.partition_type,
+              this.currentSchema.schema_version,
+              "ALTER",
+              removeAutoIncSQL
+            );
+          } else {
+            await connection.query(removeAutoIncSQL);
           }
         }
       }
@@ -1566,6 +1605,7 @@ export class DatabaseMigrationService {
       }
     }
 
+    // logger.info(`🔍 ${definedType} 值完全匹配，无需更新`);
     return false;
   }
 
@@ -1576,6 +1616,7 @@ export class DatabaseMigrationService {
    */
   private parseEnumValues(valuesStr: string): string[] {
     if (!valuesStr) return [];
+
 
     const values: string[] = [];
     let current = "";
@@ -1668,6 +1709,17 @@ export class DatabaseMigrationService {
     // 如果是字符串，去除引号并转换
     if (typeof value === "string") {
       const trimmed = value.trim();
+
+      // 特殊处理字符串形式的 "undefined"、"null" 等
+      if (trimmed === "undefined" || trimmed === "null") {
+        return "";
+      }
+
+      // 特殊处理空字符串：在MySQL中，空字符串默认值可能显示为NULL
+      // 统一将空字符串和NULL都标准化为空字符串进行比较
+      if (trimmed === "") {
+        return "";
+      }
 
       // 特殊处理MySQL TIMESTAMP函数
       if (trimmed.toUpperCase().includes("CURRENT_TIMESTAMP")) {
