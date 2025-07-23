@@ -32,7 +32,6 @@ export class SchemaDetectionController {
         return;
       }
 
-      logger.info(`开始检测表 ${tableName} 的结构变化`);
 
       const result = await this.detectionService.detectTableChanges(
         tableName,
@@ -71,7 +70,6 @@ export class SchemaDetectionController {
    */
   detectAllTables = async (req: Request, res: Response): Promise<void> => {
     try {
-      logger.info(`开始检测所有数据库类型的表结构变化`);
 
       const results = await this.detectionService.detectAllTablesChanges();
 
@@ -104,7 +102,6 @@ export class SchemaDetectionController {
    */
   detectAndSave = async (req: Request, res: Response): Promise<void> => {
     try {
-      logger.info(`开始检测并保存所有数据库类型的表结构变化`);
 
       // 检测变化
       const result = await this.detectionService.detectAllTablesChanges();
@@ -126,7 +123,6 @@ export class SchemaDetectionController {
 
       // 自动保存变化
       await this.detectionService.saveDetectedChanges(result.changes);
-      logger.info(`已保存 ${result.changes.length} 个表的结构变化`);
 
       res.json({
         success: true,
@@ -173,7 +169,6 @@ export class SchemaDetectionController {
         return;
       }
 
-      logger.info(`开始保存 ${changes.length} 个表结构变化`);
 
       await this.detectionService.saveDetectedChanges(changes);
 
@@ -201,7 +196,6 @@ export class SchemaDetectionController {
    */
   getBaseTables = async (req: Request, res: Response): Promise<void> => {
     try {
-      // logger.info("获取基准数据库中的所有表信息");
 
       // 使用service的私有方法，这里需要创建一个公共方法
       const query = `
@@ -306,7 +300,6 @@ export class SchemaDetectionController {
         return;
       }
 
-      logger.info(`获取表 ${tableName} 的详细结构信息`);
 
       // 获取列信息
       const columnsQuery = `
@@ -385,7 +378,6 @@ export class SchemaDetectionController {
     res: Response
   ): Promise<void> => {
     try {
-      logger.info("开始预览表名解析和分表类型检测结果");
 
       const schemaDetectionService = new SchemaDetectionService();
 
