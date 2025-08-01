@@ -41,9 +41,80 @@ export class DatabaseMigrationService {
   private currentMigrationBatch: string = "";
   private currentSchema: TableSchema | null = null;
   private currentEnterpriseId: number = 0;
+  // 新增：收集失败的SQL
+  private failedSqls: Array<{
+    enterprise_name: string;
+    enterprise_id: number;
+    database_type: string;
+    table_name: string;
+    migration_type: "CREATE" | "ALTER" | "DROP" | "INDEX";
+    sql_statement: string;
+    error_message: string;
+    schema_version: string;
+    partition_type: string;
+  }> = [];
 
   constructor() {
     this.connectionManager = new DatabaseConnectionManager();
+  }
+
+  /**
+   * 收集失败的SQL信息
+   */
+  private async collectFailedSql(
+    tableName: string,
+    databaseType: string,
+    partitionType: string,
+    schemaVersion: string,
+    migrationType: "CREATE" | "ALTER" | "DROP" | "INDEX",
+    sqlStatement: string,
+    errorMessage: string
+  ): Promise<void> {
+    try {
+      // 获取当前企业信息
+      const enterprise = await Enterprise.findOne({
+        where: { enterprise_id: this.currentEnterpriseId }
+      });
+
+      this.failedSqls.push({
+        enterprise_name: enterprise?.enterprise_name || `企业ID:${this.currentEnterpriseId}`,
+        enterprise_id: this.currentEnterpriseId,
+        database_type: databaseType,
+        table_name: tableName,
+        migration_type: migrationType,
+        sql_statement: sqlStatement,
+        error_message: errorMessage,
+        schema_version: schemaVersion,
+        partition_type: partitionType
+      });
+    } catch (error) {
+      logger.error("收集失败SQL信息时出错:", error);
+      // 不抛出错误，避免影响主要迁移流程
+    }
+  }
+
+  /**
+   * 获取失败的SQL列表
+   */
+  public getFailedSqls(): Array<{
+    enterprise_name: string;
+    enterprise_id: number;
+    database_type: string;
+    table_name: string;
+    migration_type: "CREATE" | "ALTER" | "DROP" | "INDEX";
+    sql_statement: string;
+    error_message: string;
+    schema_version: string;
+    partition_type: string;
+  }> {
+    return [...this.failedSqls]; // 返回副本
+  }
+
+  /**
+   * 清空失败的SQL列表
+   */
+  public clearFailedSqls(): void {
+    this.failedSqls = [];
   }
 
   /**
@@ -108,6 +179,18 @@ export class DatabaseMigrationService {
       executionStatus = "FAILED";
       errorMessage = error instanceof Error ? error.message : "未知错误";
       logger.error(`SQL执行失败: ${sqlStatement.substring(0, 100)}...`, error);
+      
+      // 收集失败的SQL信息
+      await this.collectFailedSql(
+        tableName,
+        databaseType,
+        partitionType,
+        schemaVersion,
+        migrationType,
+        sqlStatement,
+        errorMessage
+      );
+      
       throw error; // 重新抛出错误，保持原有错误处理逻辑
     } finally {
       const executionTime = Date.now() - startTime;
@@ -134,15 +217,22 @@ export class DatabaseMigrationService {
    * @param schemaVersion 版本号（可选，默认最新版本）
    * @param partitionType 分区类型（可选，自动检测）
    * @param enterpriseId 企业ID（可选，指定特定企业进行迁移）
+   * @param clearFailedSqlsOnStart 是否在开始时清空失败SQL列表（默认true，一键迁移时设为false）
    */
   async migrateTable(
     tableName: string,
     databaseType: string,
     schemaVersion?: string,
     partitionType?: string,
-    enterpriseId?: number
+    enterpriseId?: number,
+    clearFailedSqlsOnStart: boolean = true
   ): Promise<void> {
     try {
+      // 根据参数决定是否清空失败SQL列表
+      if (clearFailedSqlsOnStart) {
+        this.clearFailedSqls();
+      }
+      
       // 生成迁移批次ID
       this.currentMigrationBatch = `${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(
         0,

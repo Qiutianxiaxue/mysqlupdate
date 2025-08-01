@@ -551,6 +551,9 @@ export class MigrationController {
             } ${migrationScope}迁移执行完成`
           : `表 ${table_name} (${database_type}) ${migrationScope}迁移完成！成功: ${successCount}/${totalSchemas}, 失败: ${failureCount}/${totalSchemas}`;
 
+      // 收集所有失败的SQL
+      const failedSqls = this.migrationService.getFailedSqls();
+
       res.json({
         success: failureCount === 0,
         message,
@@ -564,6 +567,7 @@ export class MigrationController {
                 upgrade_notes: allSchemas[0]!.upgrade_notes,
                 migration_scope: migrationScope,
                 enterprise_id: enterprise_id || null,
+                failed_sqls: failedSqls, // 新增：返回所有失败的SQL
               }
             : {
                 table_name,
@@ -572,6 +576,7 @@ export class MigrationController {
                 migration_results: migrationResults,
                 migration_scope: migrationScope,
                 enterprise_id: enterprise_id || null,
+                failed_sqls: failedSqls, // 新增：返回所有失败的SQL
               },
       });
     } catch (error) {
@@ -661,7 +666,10 @@ export class MigrationController {
       const lockKey = lockResult.lock!.lock_key;
 
       try {
-        // 1. 获取TableSchema表中所有激活的表结构定义
+        // 1. 在开始一键迁移时清空失败SQL列表
+        this.migrationService.clearFailedSqls();
+        
+        // 2. 获取TableSchema表中所有激活的表结构定义
         const allSchemas = await TableSchema.findAll({
           where: {
             is_active: true,
@@ -706,13 +714,14 @@ export class MigrationController {
 
         for (const schema of allSchemas) {
           try {
-            // 执行迁移（传递企业ID参数）
+            // 执行迁移（传递企业ID参数，不清空失败SQL列表）
             await this.migrationService.migrateTable(
               schema.table_name,
               schema.database_type,
               schema.schema_version,
               schema.partition_type,
-              enterprise_id
+              enterprise_id,
+              false // 不清空失败SQL列表，保留之前的失败记录
             );
 
             migrationResults.push({
@@ -757,7 +766,7 @@ export class MigrationController {
         }
 
         const totalTables = allSchemas.length;
-        const message = `${migrationScope}一键迁移完成！成功: ${successCount}/${totalTables}, 失败: ${failureCount}/${totalTables}`;
+        const message = `${migrationScope}一键迁移完成！`;
 
         // 3. 按数据库类型统计结果
         const byDatabaseType: {
@@ -780,21 +789,26 @@ export class MigrationController {
           }
         });
 
+        // 4. 收集所有失败的SQL
+        const failedSqls = this.migrationService.getFailedSqls();
+
         res.json({
           success: failureCount === 0, // 只有全部成功才返回true
           message,
           data: {
             total_schemas: totalTables,
             tables_migrated: successCount,
-            migration_results: migrationResults,
+            // migration_results: migrationResults,
             enterprise_id: enterprise_id || null,
             enterprise_name: targetEnterprise?.enterprise_name || null,
             migration_scope: migrationScope,
+            failed_sqls: failedSqls, // 新增：返回所有失败的SQL
           },
           summary: {
             migration_success: successCount,
             migration_failure: failureCount,
             by_database_type: byDatabaseType,
+            failed_sql_count: failedSqls.length, // 新增：失败SQL数量统计
           },
         });
       } finally {
@@ -1248,7 +1262,10 @@ export class MigrationController {
           return;
         }
 
-        // 2. 对每个门店分表结构定义执行迁移
+        // 2. 在开始门店分表迁移时清空失败SQL列表
+        this.migrationService.clearFailedSqls();
+
+        // 3. 对每个门店分表结构定义执行迁移
         const migrationResults: Array<{
           table_name: string;
           database_type: string;
@@ -1342,6 +1359,9 @@ export class MigrationController {
           }
         });
 
+        // 4. 收集所有失败的SQL
+        const failedSqls = this.migrationService.getFailedSqls();
+
         res.json({
           success: failureCount === 0, // 只有全部成功才返回true
           message,
@@ -1353,11 +1373,13 @@ export class MigrationController {
             enterprise_id: enterprise_id,
             enterprise_name: targetEnterprise.enterprise_name,
             migration_scope: migrationScope,
+            failed_sqls: failedSqls, // 新增：返回所有失败的SQL
           },
           summary: {
             migration_success: successCount,
             migration_failure: failureCount,
             by_database_type: byDatabaseType,
+            failed_sql_count: failedSqls.length, // 新增：失败SQL数量统计
           },
         });
       } finally {

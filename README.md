@@ -226,22 +226,55 @@ POST /api/migration/execute-all
 
 ```json
 {
-  "success": true,
+  "success": false,
+  "message": "全企业一键迁移完成！成功: 4/5, 失败: 1/5",
   "data": {
-    "summary": {
-      "total_tables": 5,
-      "successful_migrations": 4,
-      "failed_migrations": 1,
-      "total_enterprises": 3
-    },
-    "results": [
+    "total_schemas": 5,
+    "tables_migrated": 4,
+    "migration_results": [
       {
         "table_name": "users",
         "database_type": "main",
+        "partition_type": "none",
+        "schema_version": "1.2.0",
         "success": true,
-        "enterprises_processed": 3
+        "message": "迁移成功到版本 1.2.0"
+      },
+      {
+        "table_name": "orders",
+        "database_type": "order",
+        "partition_type": "store",
+        "schema_version": "1.1.0",
+        "success": false,
+        "message": "迁移失败",
+        "error": "Table 'orders001' already exists"
+      }
+    ],
+    "enterprise_id": null,
+    "enterprise_name": null,
+    "migration_scope": "全企业",
+    "failed_sqls": [
+      {
+        "enterprise_name": "测试企业",
+        "enterprise_id": 1,
+        "database_type": "order",
+        "table_name": "orders001",
+        "migration_type": "CREATE",
+        "sql_statement": "CREATE TABLE `orders001` (`id` INT AUTO_INCREMENT PRIMARY KEY, `order_no` VARCHAR(50) NOT NULL)",
+        "error_message": "Table 'orders001' already exists",
+        "schema_version": "1.1.0",
+        "partition_type": "store"
       }
     ]
+  },
+  "summary": {
+    "migration_success": 4,
+    "migration_failure": 1,
+    "by_database_type": {
+      "main": { "total": 2, "success": 2, "failure": 0 },
+      "order": { "total": 3, "success": 2, "failure": 1 }
+    },
+    "failed_sql_count": 1
   }
 }
 ```
