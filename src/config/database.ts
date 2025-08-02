@@ -5,12 +5,12 @@ dotenv.config();
 
 const sequelize = new Sequelize({
   dialect: "mysql",
-  host: process.env.DB_HOST || "localhost",
+  host: process.env.DB_HOST || "10.0.0.7",
   port: parseInt(process.env.DB_PORT || "3306"),
-  database: process.env.DB_NAME || "mysql_update",
+  database: process.env.DB_NAME || "qc_service",
   username: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "",
-  logging:  false,
+  password: process.env.DB_PASSWORD || "Qicheng@123",
+  logging: false,
   pool: {
     max: 10,
     min: 0,

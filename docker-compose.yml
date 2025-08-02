@@ -1,10 +1,8 @@
-version: "3.8"
-
 services:
   # Node.js应用服务
   mysqlupdate-task:
     build: .
-    container_name: mysqlupdate-task
+    container_name: qiutian-mysqlupdate-task
     restart: unless-stopped
     ports:
       - "${PORT:-33000}:${PORT:-33000}"
@@ -14,7 +12,7 @@ services:
       # 其他配置
       TZ: Asia/Shanghai
     networks:
-      - mysqlupdate-network
+      - qiutian-mysqlupdate-network
     volumes:
       - ./logs:/app/logs
     healthcheck:
@@ -24,5 +22,5 @@ services:
       retries: 3
 
 networks:
-  mysqlupdate-network:
+  qiutian-mysqlupdate-network:
     driver: bridge
