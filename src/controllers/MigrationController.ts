@@ -82,17 +82,10 @@ export class MigrationController {
       } = req.body;
 
       // 验证必需字段
-      if (
-        !table_name ||
-        !database_type ||
-        !partition_type ||
-        !schema_version ||
-        !schema_definition
-      ) {
+      if (!table_name || !database_type || !partition_type || !schema_version || !schema_definition) {
         res.status(400).json({
           success: false,
-          message:
-            "缺少必需字段: table_name, database_type, partition_type, schema_version, schema_definition",
+          message: "缺少必需字段: table_name, database_type, partition_type, schema_version, schema_definition",
         });
         return;
       }
@@ -141,9 +134,7 @@ export class MigrationController {
 
       if (existingSchema) {
         // 如果存在激活状态的表定义，检查版本号
-        if (
-          !this.isVersionGreater(schema_version, existingSchema.schema_version)
-        ) {
+        if (!this.isVersionGreater(schema_version, existingSchema.schema_version)) {
           res.status(400).json({
             success: false,
             message: `表定义 ${table_name} (${database_type}, ${partition_type}) 已存在，新版本号 ${schema_version} 必须大于当前版本号 ${existingSchema.schema_version}`,
@@ -165,8 +156,7 @@ export class MigrationController {
 
         // 添加时间分区相关字段，优先使用请求中的新值，否则保留原有值
         if (time_interval || existingSchema.time_interval) {
-          createData.time_interval =
-            time_interval || existingSchema.time_interval;
+          createData.time_interval = time_interval || existingSchema.time_interval;
         }
         if (time_format || existingSchema.time_format) {
           createData.time_format = time_format || existingSchema.time_format;
@@ -240,8 +230,7 @@ export class MigrationController {
    */
   async getTableSchemaByCondition(req: Request, res: Response): Promise<void> {
     try {
-      const { table_name, database_type, partition_type, schema_version } =
-        req.body;
+      const { table_name, database_type, partition_type, schema_version } = req.body;
 
       if (!table_name || !database_type || !partition_type) {
         res.status(400).json({
@@ -299,8 +288,7 @@ export class MigrationController {
    */
   async deleteTableSchema(req: Request, res: Response): Promise<void> {
     try {
-      const { table_name, database_type, partition_type, schema_version } =
-        req.body;
+      const { table_name, database_type, partition_type, schema_version } = req.body;
 
       if (!table_name || !database_type || !partition_type) {
         res.status(400).json({
@@ -360,13 +348,7 @@ export class MigrationController {
    */
   async executeMigration(req: Request, res: Response): Promise<void> {
     try {
-      const {
-        table_name,
-        database_type,
-        partition_type,
-        schema_version,
-        enterprise_id,
-      } = req.body;
+      const { table_name, database_type, partition_type, schema_version, enterprise_id } = req.body;
 
       if (!table_name || !database_type) {
         res.status(400).json({
@@ -386,10 +368,7 @@ export class MigrationController {
       }
 
       // 验证分区类型（如果提供）
-      if (
-        partition_type &&
-        !["store", "time", "none"].includes(partition_type)
-      ) {
+      if (partition_type && !["store", "time", "none"].includes(partition_type)) {
         res.status(400).json({
           success: false,
           message: "partition_type 必须是: store, time, none 之一",
@@ -402,7 +381,7 @@ export class MigrationController {
         table_name: {
           [Op.or]: [
             table_name, // 精确匹配表名
-            { [Op.like]: table_name + "__%", }, // 模糊匹配带分区后缀的表名
+            { [Op.like]: table_name + "__%" }, // 模糊匹配带分区后缀的表名
           ],
         },
         database_type,
@@ -428,9 +407,7 @@ export class MigrationController {
         ], // 按分区类型和版本排序
         logging: (msg) => logger.info(`Sequelize: ${msg}`),
       });
-      logger.info(
-        `🗂️ 查找到表结构定义: ${JSON.stringify(allSchemas, null, 2)}`
-      );
+      logger.info(`🗂️ 查找到表结构定义: ${JSON.stringify(allSchemas, null, 2)}`);
       if (allSchemas.length === 0) {
         res.status(404).json({
           success: false,
@@ -444,10 +421,7 @@ export class MigrationController {
       }
 
       // 验证企业ID（如果提供）
-      if (
-        enterprise_id &&
-        (typeof enterprise_id !== "number" || enterprise_id <= 0)
-      ) {
+      if (enterprise_id && (typeof enterprise_id !== "number" || enterprise_id <= 0)) {
         res.status(400).json({
           success: false,
           message: "enterprise_id 必须是正整数",
@@ -455,9 +429,7 @@ export class MigrationController {
         return;
       }
 
-      const migrationScope = enterprise_id
-        ? `指定企业(ID: ${enterprise_id})`
-        : "全企业";
+      const migrationScope = enterprise_id ? `指定企业(ID: ${enterprise_id})` : "全企业";
 
       // 执行所有匹配的schema迁移
       const migrationResults: Array<{
@@ -494,13 +466,17 @@ export class MigrationController {
           const lockKey = lockResult.lock!.lock_key;
 
           try {
+            // 将当前锁key传给迁移服务，以便记录每条SQL的lock_key
+            this.migrationService.setCurrentLockKey(lockKey);
+
             // 执行迁移
             await this.migrationService.migrateTable(
               schema.table_name,
               schema.database_type,
               schema.schema_version,
               schema.partition_type,
-              enterprise_id
+              enterprise_id,
+              false // 不清空失败SQL列表
             );
 
             migrationResults.push({
@@ -517,10 +493,11 @@ export class MigrationController {
           } finally {
             // 释放锁
             await this.lockService.releaseLock(lockKey);
+            // 清除迁移服务中的当前锁key
+            this.migrationService.clearCurrentLockKey();
           }
         } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : "未知错误";
+          const errorMessage = error instanceof Error ? error.message : "未知错误";
 
           migrationResults.push({
             partition_type: schema.partition_type,
@@ -534,19 +511,14 @@ export class MigrationController {
           });
 
           failureCount++;
-          logger.error(
-            `表 ${table_name} (${database_type}, ${schema.partition_type}) 迁移失败:`,
-            error
-          );
+          logger.error(`表 ${table_name} (${database_type}, ${schema.partition_type}) 迁移失败:`, error);
         }
       }
 
       const totalSchemas = allSchemas.length;
       const message =
         allSchemas.length === 1
-          ? `表 ${table_name} (${database_type}, ${
-              allSchemas[0]!.partition_type
-            }) 版本 ${
+          ? `表 ${table_name} (${database_type}, ${allSchemas[0]!.partition_type}) 版本 ${
               allSchemas[0]!.schema_version
             } ${migrationScope}迁移执行完成`
           : `表 ${table_name} (${database_type}) ${migrationScope}迁移完成！成功: ${successCount}/${totalSchemas}, 失败: ${failureCount}/${totalSchemas}`;
@@ -631,9 +603,7 @@ export class MigrationController {
 
       // 获取全量迁移锁
       const lockOperation = enterprise_id
-        ? `一键迁移所有表(企业ID: ${enterprise_id}): ${
-            targetEnterprise!.enterprise_name
-          }`
+        ? `一键迁移所有表(企业ID: ${enterprise_id}): ${targetEnterprise!.enterprise_name}`
         : "一键迁移所有表(全企业)";
 
       const lockResult = await this.lockService.acquireLock(
@@ -665,10 +635,16 @@ export class MigrationController {
 
       const lockKey = lockResult.lock!.lock_key;
 
+      // 把锁key设置到迁移服务，方便记录每条SQL的lock_key
+      this.migrationService.setCurrentLockKey(lockKey);
+
+      // 把锁key设置到迁移服务，方便记录每条SQL的lock_key
+      this.migrationService.setCurrentLockKey(lockKey);
+
       try {
         // 1. 在开始一键迁移时清空失败SQL列表
         this.migrationService.clearFailedSqls();
-        
+
         // 2. 获取TableSchema表中所有激活的表结构定义
         const allSchemas = await TableSchema.findAll({
           where: {
@@ -738,8 +714,7 @@ export class MigrationController {
 
             successCount++;
           } catch (error) {
-            const errorMessage =
-              error instanceof Error ? error.message : "未知错误";
+            const errorMessage = error instanceof Error ? error.message : "未知错误";
 
             migrationResults.push({
               table_name: schema.table_name,
@@ -755,13 +730,8 @@ export class MigrationController {
             });
 
             failureCount++;
-            const errorTableScope = enterprise_id
-              ? `为企业 ${targetEnterprise!.enterprise_name} `
-              : "";
-            logger.error(
-              `❌ ${errorTableScope}表 ${schema.table_name} 迁移失败:`,
-              error
-            );
+            const errorTableScope = enterprise_id ? `为企业 ${targetEnterprise!.enterprise_name} ` : "";
+            logger.error(`❌ ${errorTableScope}表 ${schema.table_name} 迁移失败:`, error);
           }
         }
 
@@ -814,6 +784,8 @@ export class MigrationController {
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
+        // 清除迁移服务中的当前锁key
+        this.migrationService.clearCurrentLockKey();
       }
     } catch (error) {
       const { enterprise_id } = req.body;
@@ -930,16 +902,10 @@ export class MigrationController {
       } = req.body;
 
       // 验证必需字段
-      if (
-        !enterprise_key ||
-        !enterprise_code ||
-        !enterprise_name ||
-        !database_name
-      ) {
+      if (!enterprise_key || !enterprise_code || !enterprise_name || !database_name) {
         res.status(400).json({
           success: false,
-          message:
-            "缺少必需字段: enterprise_key, enterprise_code, enterprise_name, database_name",
+          message: "缺少必需字段: enterprise_key, enterprise_code, enterprise_name, database_name",
         });
         return;
       }
@@ -991,32 +957,20 @@ export class MigrationController {
         database_password: database_password || "123456",
         database_hostport: database_hostport || "3306",
         log_database_name: log_database_name || `${database_name}_log`,
-        log_database_hostname:
-          log_database_hostname || database_hostname || "localhost",
-        log_database_username:
-          log_database_username || database_username || "root",
-        log_database_password:
-          log_database_password || database_password || "123456",
-        log_database_hostport:
-          log_database_hostport || database_hostport || "3306",
+        log_database_hostname: log_database_hostname || database_hostname || "localhost",
+        log_database_username: log_database_username || database_username || "root",
+        log_database_password: log_database_password || database_password || "123456",
+        log_database_hostport: log_database_hostport || database_hostport || "3306",
         order_database_name: order_database_name || `${database_name}_order`,
-        order_database_hostname:
-          order_database_hostname || database_hostname || "localhost",
-        order_database_username:
-          order_database_username || database_username || "root",
-        order_database_password:
-          order_database_password || database_password || "123456",
-        order_database_hostport:
-          order_database_hostport || database_hostport || "3306",
+        order_database_hostname: order_database_hostname || database_hostname || "localhost",
+        order_database_username: order_database_username || database_username || "root",
+        order_database_password: order_database_password || database_password || "123456",
+        order_database_hostport: order_database_hostport || database_hostport || "3306",
         static_database_name: static_database_name || `${database_name}_static`,
-        static_database_hostname:
-          static_database_hostname || database_hostname || "localhost",
-        static_database_username:
-          static_database_username || database_username || "root",
-        static_database_password:
-          static_database_password || database_password || "123456",
-        static_database_hostport:
-          static_database_hostport || database_hostport || "3306",
+        static_database_hostname: static_database_hostname || database_hostname || "localhost",
+        static_database_username: static_database_username || database_username || "root",
+        static_database_password: static_database_password || database_password || "123456",
+        static_database_hostport: static_database_hostport || database_hostport || "3306",
         user_id,
         status: status || 1,
       });
@@ -1100,10 +1054,7 @@ export class MigrationController {
   /**
    * 清理过期的迁移锁
    */
-  async cleanupExpiredMigrationLocks(
-    req: Request,
-    res: Response
-  ): Promise<void> {
+  async cleanupExpiredMigrationLocks(req: Request, res: Response): Promise<void> {
     try {
       const { hours_old } = req.body;
       const hoursOld = hours_old || 24; // 默认24小时
@@ -1309,8 +1260,7 @@ export class MigrationController {
 
             successCount++;
           } catch (error) {
-            const errorMessage =
-              error instanceof Error ? error.message : "未知错误";
+            const errorMessage = error instanceof Error ? error.message : "未知错误";
             const actualTableName = `${schema.table_name}${store_id}`;
 
             migrationResults.push({
@@ -1385,13 +1335,12 @@ export class MigrationController {
       } finally {
         // 释放锁
         await this.lockService.releaseLock(lockKey);
+        // 清除迁移服务中的当前锁key
+        this.migrationService.clearCurrentLockKey();
       }
     } catch (error) {
       const { store_id, enterprise_id } = req.body;
-      logger.error(
-        `门店 ${store_id} (企业ID: ${enterprise_id}) 分表迁移失败:`,
-        error
-      );
+      logger.error(`门店 ${store_id} (企业ID: ${enterprise_id}) 分表迁移失败:`, error);
       res.status(500).json({
         success: false,
         message: `门店 ${store_id} (企业ID: ${enterprise_id}) 分表迁移失败`,
@@ -1418,10 +1367,7 @@ export class MigrationController {
         enterprise.enterprise_id
       );
     } catch (error) {
-      logger.error(
-        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`,
-        error
-      );
+      logger.error(`企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`, error);
       throw error;
     }
   }
@@ -1469,9 +1415,7 @@ export class MigrationController {
 
       // 获取全量迁移锁（检查模式，防止与实际迁移冲突）
       const lockOperation = enterprise_id
-        ? `一键迁移检查(企业ID: ${enterprise_id}): ${
-            targetEnterprise!.enterprise_name
-          }`
+        ? `一键迁移检查(企业ID: ${enterprise_id}): ${targetEnterprise!.enterprise_name}`
         : "一键迁移检查(全企业)";
 
       const lockResult = await this.lockService.acquireLock(
@@ -1505,9 +1449,7 @@ export class MigrationController {
 
       try {
         // 执行一键迁移检查
-        const checkResult = await this.migrationService.checkMigrateAllTables(
-          enterprise_id
-        );
+        const checkResult = await this.migrationService.checkMigrateAllTables(enterprise_id);
 
         const message = `${migrationScope}一键迁移检查完成！共收集 ${checkResult.total_sql_statements} 条SQL语句，涉及 ${checkResult.total_schemas} 个表结构定义和 ${checkResult.total_enterprises} 个企业`;
 

@@ -14,21 +14,16 @@ export interface MigrationHistoryAttributes {
   execution_status: "SUCCESS" | "FAILED"; // 执行状态
   execution_time: number; // 执行耗时（毫秒）
   error_message?: string; // 错误信息（如果失败）
+  lock_key?: string; // 关联的迁移锁key（可选，用于关联一次迁移的所有SQL）
   migration_batch: string; // 迁移批次ID（用于关联同一次迁移的多个SQL）
   create_time: Date;
 }
 
 // 创建时的可选字段
 export interface MigrationHistoryCreationAttributes
-  extends Optional<
-    MigrationHistoryAttributes,
-    "migration_history_id" | "create_time"
-  > {}
+  extends Optional<MigrationHistoryAttributes, "migration_history_id" | "create_time"> {}
 
-class MigrationHistory extends Model<
-  MigrationHistoryAttributes,
-  MigrationHistoryCreationAttributes
-> {
+class MigrationHistory extends Model<MigrationHistoryAttributes, MigrationHistoryCreationAttributes> {
   public migration_history_id!: number;
   public enterprise_id!: number;
   public table_name!: string;
@@ -40,6 +35,7 @@ class MigrationHistory extends Model<
   public execution_status!: "SUCCESS" | "FAILED";
   public execution_time!: number;
   public error_message?: string;
+  public lock_key?: string;
   public migration_batch!: string;
   public readonly create_time!: Date;
 }
@@ -80,8 +76,7 @@ MigrationHistory.init(
     migration_type: {
       type: DataTypes.ENUM("CREATE", "ALTER", "DROP", "INDEX"),
       allowNull: false,
-      comment:
-        "迁移类型：CREATE-创建表，ALTER-修改表，DROP-删除表/列，INDEX-索引操作",
+      comment: "迁移类型：CREATE-创建表，ALTER-修改表，DROP-删除表/列，INDEX-索引操作",
     },
     sql_statement: {
       type: DataTypes.TEXT("long"),
@@ -102,6 +97,11 @@ MigrationHistory.init(
       type: DataTypes.TEXT,
       allowNull: true,
       comment: "错误信息（执行失败时记录）",
+    },
+    lock_key: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      comment: "迁移锁的key，用于关联同一次迁移的所有SQL",
     },
     migration_batch: {
       type: DataTypes.STRING(255),
@@ -124,6 +124,10 @@ MigrationHistory.init(
       {
         name: "idx_enterprise_table_database",
         fields: ["enterprise_id", "table_name", "database_type"],
+      },
+      {
+        name: "idx_lock_key",
+        fields: ["lock_key"],
       },
       {
         name: "idx_migration_batch",

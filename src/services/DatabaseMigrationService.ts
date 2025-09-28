@@ -41,6 +41,8 @@ export class DatabaseMigrationService {
   private currentMigrationBatch: string = "";
   private currentSchema: TableSchema | null = null;
   private currentEnterpriseId: number = 0;
+  // 当前迁移持有的锁key（可由迁移流程在获取锁后设置）
+  private currentLockKey: string | null = null;
   // 新增：收集失败的SQL
   private failedSqls: Array<{
     enterprise_name: string;
@@ -59,6 +61,20 @@ export class DatabaseMigrationService {
   }
 
   /**
+   * 在迁移流程开始时设置当前锁key，用于记录每条SQL的lock_key字段
+   */
+  public setCurrentLockKey(lockKey: string | null) {
+    this.currentLockKey = lockKey;
+  }
+
+  /**
+   * 清除当前锁key
+   */
+  public clearCurrentLockKey() {
+    this.currentLockKey = null;
+  }
+
+  /**
    * 收集失败的SQL信息
    */
   private async collectFailedSql(
@@ -73,7 +89,7 @@ export class DatabaseMigrationService {
     try {
       // 获取当前企业信息
       const enterprise = await Enterprise.findOne({
-        where: { enterprise_id: this.currentEnterpriseId }
+        where: { enterprise_id: this.currentEnterpriseId },
       });
 
       this.failedSqls.push({
@@ -85,7 +101,7 @@ export class DatabaseMigrationService {
         sql_statement: sqlStatement,
         error_message: errorMessage,
         schema_version: schemaVersion,
-        partition_type: partitionType
+        partition_type: partitionType,
       });
     } catch (error) {
       logger.error("收集失败SQL信息时出错:", error);
@@ -150,6 +166,11 @@ export class DatabaseMigrationService {
         migrationData.error_message = errorMessage;
       }
 
+      // 如果当前存在锁key，则一并记录，方便后续按锁查询该次迁移的所有SQL
+      if (this.currentLockKey) {
+        migrationData.lock_key = this.currentLockKey;
+      }
+
       await MigrationHistory.create(migrationData);
     } catch (error) {
       logger.error("记录SQL执行历史失败:", error);
@@ -179,7 +200,7 @@ export class DatabaseMigrationService {
       executionStatus = "FAILED";
       errorMessage = error instanceof Error ? error.message : "未知错误";
       logger.error(`SQL执行失败: ${sqlStatement.substring(0, 100)}...`, error);
-      
+
       // 收集失败的SQL信息
       await this.collectFailedSql(
         tableName,
@@ -190,7 +211,7 @@ export class DatabaseMigrationService {
         sqlStatement,
         errorMessage
       );
-      
+
       throw error; // 重新抛出错误，保持原有错误处理逻辑
     } finally {
       const executionTime = Date.now() - startTime;
@@ -232,39 +253,23 @@ export class DatabaseMigrationService {
       if (clearFailedSqlsOnStart) {
         this.clearFailedSqls();
       }
-      
+
       // 生成迁移批次ID
-      this.currentMigrationBatch = `${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(
-        0,
-        8
-      )}`;
+      this.currentMigrationBatch = `${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
       // 获取表结构定义
       let schema: TableSchema | null;
       if (partitionType) {
         // 如果指定了分区类型，精确查找
-        schema = await this.getTableSchema(
-          tableName,
-          databaseType,
-          partitionType,
-          schemaVersion
-        );
+        schema = await this.getTableSchema(tableName, databaseType, partitionType, schemaVersion);
       } else {
         // 如果没有指定分区类型，自动检测
-        schema = await this.getTableSchemaWithAutoPartition(
-          tableName,
-          databaseType,
-          schemaVersion
-        );
+        schema = await this.getTableSchemaWithAutoPartition(tableName, databaseType, schemaVersion);
       }
 
       if (!schema) {
-        const partitionMsg = partitionType
-          ? `, partition_type: ${partitionType}`
-          : "";
-        throw new Error(
-          `未找到表结构定义: ${tableName} (database_type: ${databaseType}${partitionMsg})`
-        );
+        const partitionMsg = partitionType ? `, partition_type: ${partitionType}` : "";
+        throw new Error(`未找到表结构定义: ${tableName} (database_type: ${databaseType}${partitionMsg})`);
       }
 
       // 获取需要迁移的企业
@@ -294,10 +299,7 @@ export class DatabaseMigrationService {
         try {
           await this.migrateTableForEnterprise(enterprise, schema);
         } catch (error) {
-          logger.error(
-            `❌ 企业 ${enterprise.enterprise_name} (ID: ${enterprise.enterprise_id}) 迁移失败:`,
-            error
-          );
+          logger.error(`❌ 企业 ${enterprise.enterprise_name} (ID: ${enterprise.enterprise_id}) 迁移失败:`, error);
         }
       }
     } catch (error) {
@@ -366,22 +368,16 @@ export class DatabaseMigrationService {
     }
 
     // 如果只有一个分区类型，直接返回
-    const uniquePartitionTypes = [
-      ...new Set(schemas.map((s) => s.partition_type)),
-    ];
+    const uniquePartitionTypes = [...new Set(schemas.map((s) => s.partition_type))];
     if (uniquePartitionTypes.length === 1) {
       return schemas[0] || null;
     }
 
     // 如果有多个分区类型，优先返回 'none' 类型（向后兼容）
-    const nonePartitionSchema = schemas.find(
-      (s) => s.partition_type === "none"
-    );
+    const nonePartitionSchema = schemas.find((s) => s.partition_type === "none");
     if (nonePartitionSchema) {
       logger.warn(
-        `表 ${tableName} (${databaseType}) 存在多种分区类型 [${uniquePartitionTypes.join(
-          ", "
-        )}]，自动选择 'none' 类型`
+        `表 ${tableName} (${databaseType}) 存在多种分区类型 [${uniquePartitionTypes.join(", ")}]，自动选择 'none' 类型`
       );
       return nonePartitionSchema;
     }
@@ -390,9 +386,9 @@ export class DatabaseMigrationService {
     const firstSchema = schemas[0];
     if (firstSchema) {
       logger.warn(
-        `表 ${tableName} (${databaseType}) 存在多种分区类型 [${uniquePartitionTypes.join(
-          ", "
-        )}]，自动选择第一个: ${firstSchema.partition_type}`
+        `表 ${tableName} (${databaseType}) 存在多种分区类型 [${uniquePartitionTypes.join(", ")}]，自动选择第一个: ${
+          firstSchema.partition_type
+        }`
       );
       return firstSchema;
     }
@@ -403,55 +399,28 @@ export class DatabaseMigrationService {
   /**
    * 为单个企业迁移表
    */
-  private async migrateTableForEnterprise(
-    enterprise: Enterprise,
-    schema: TableSchema
-  ): Promise<void> {
+  private async migrateTableForEnterprise(enterprise: Enterprise, schema: TableSchema): Promise<void> {
     try {
       // 设置当前处理的schema，用于SQL记录
       this.currentSchema = schema;
 
-      const tableDefinition = JSON.parse(
-        schema.schema_definition
-      ) as TableDefinition;
+      const tableDefinition = JSON.parse(schema.schema_definition) as TableDefinition;
 
       // 获取对应数据库类型的连接
-      const connection = await this.connectionManager.getConnection(
-        enterprise,
-        schema.database_type
-      );
+      const connection = await this.connectionManager.getConnection(enterprise, schema.database_type);
 
       // 根据分区类型处理
       if (schema.partition_type === "store") {
         // 门店分表逻辑 - 查询企业的所有门店并为每个门店创建分表
-        await this.migrateStorePartitionedTable(
-          connection,
-          tableDefinition,
-          enterprise,
-          schema
-        );
+        await this.migrateStorePartitionedTable(connection, tableDefinition, enterprise, schema);
       } else if (schema.partition_type === "time") {
         // 时间分表逻辑 - 使用配置的时间分区设置
-        await this.migrateTimePartitionedTableWithConfig(
-          connection,
-          tableDefinition,
-          schema,
-          enterprise
-        );
+        await this.migrateTimePartitionedTableWithConfig(connection, tableDefinition, schema, enterprise);
       } else {
-        await this.migrateTableWithConnection(
-          connection,
-          tableDefinition,
-          enterprise.enterprise_id,
-          undefined,
-          schema
-        );
+        await this.migrateTableWithConnection(connection, tableDefinition, enterprise.enterprise_id, undefined, schema);
       }
     } catch (error) {
-      logger.error(
-        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 迁移失败:`,
-        error
-      );
+      logger.error(`企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 迁移失败:`, error);
       throw error;
     } finally {
       // 清理当前schema
@@ -516,23 +485,12 @@ export class DatabaseMigrationService {
       }
 
       // 检查表是否存在
-      const tableExists = await this.tableExistsWithConnection(
-        connection,
-        tableName
-      );
+      const tableExists = await this.tableExistsWithConnection(connection, tableName);
 
       if (tableExists) {
-        await this.upgradeTableWithConnection(
-          connection,
-          tableName,
-          tableDefinition
-        );
+        await this.upgradeTableWithConnection(connection, tableName, tableDefinition);
       } else {
-        await this.createTableWithConnection(
-          connection,
-          tableName,
-          tableDefinition
-        );
+        await this.createTableWithConnection(connection, tableName, tableDefinition);
       }
 
       // 记录成功的迁移版本
@@ -618,17 +576,12 @@ export class DatabaseMigrationService {
   ): Promise<void> {
     try {
       // 从企业主数据库查询所有门店
-      const mainConnection = await this.connectionManager.getConnection(
-        enterprise,
-        "main"
-      );
+      const mainConnection = await this.connectionManager.getConnection(enterprise, "main");
 
       const stores = await this.queryStoreList(mainConnection);
 
       if (stores.length === 0) {
-        logger.warn(
-          `   ⚠️ 企业 ${enterprise.enterprise_name} 没有找到任何门店，跳过门店分表`
-        );
+        logger.warn(`   ⚠️ 企业 ${enterprise.enterprise_name} 没有找到任何门店，跳过门店分表`);
         return;
       }
 
@@ -655,9 +608,7 @@ export class DatabaseMigrationService {
     try {
       // 尝试不同的门店表名
 
-      const [results] = await connection.query(
-        `SELECT store_id,store_name FROM qc_store WHERE status = 1`
-      );
+      const [results] = await connection.query(`SELECT store_id,store_name FROM qc_store WHERE status = 1`);
 
       if (Array.isArray(results) && results.length > 0) {
         return results;
@@ -686,18 +637,8 @@ export class DatabaseMigrationService {
 
     // 修改循环条件：确保至少执行一次，即使开始时间和结束时间相同
     do {
-      const timeSuffix = this.formatDateForTable(
-        currentDate,
-        interval,
-        timeFormat
-      );
-      await this.migrateTableWithConnection(
-        connection,
-        tableDefinition,
-        enterpriseId,
-        timeSuffix,
-        schema
-      );
+      const timeSuffix = this.formatDateForTable(currentDate, interval, timeFormat);
+      await this.migrateTableWithConnection(connection, tableDefinition, enterpriseId, timeSuffix, schema);
 
       // 移动到下一个时间间隔
       if (interval === "day") {
@@ -723,15 +664,10 @@ export class DatabaseMigrationService {
   /**
    * 检查表是否存在（使用指定连接）
    */
-  private async tableExistsWithConnection(
-    connection: Sequelize,
-    tableName: string
-  ): Promise<boolean> {
+  private async tableExistsWithConnection(connection: Sequelize, tableName: string): Promise<boolean> {
     try {
       // 先获取当前数据库名称进行调试
-      const [dbNameResult] = await connection.query(
-        "SELECT DATABASE() as db_name"
-      );
+      const [dbNameResult] = await connection.query("SELECT DATABASE() as db_name");
       const _currentDb = (dbNameResult as any[])[0]?.db_name;
 
       // 方法1: 使用SHOW TABLES（最直接可靠）
@@ -743,9 +679,7 @@ export class DatabaseMigrationService {
       });
 
       // 检查表名（不区分大小写）
-      const tableExists = tableList.some(
-        (table) => table.toLowerCase() === tableName.toLowerCase()
-      );
+      const tableExists = tableList.some((table) => table.toLowerCase() === tableName.toLowerCase());
 
       return tableExists;
     } catch (error) {
@@ -774,9 +708,7 @@ export class DatabaseMigrationService {
   ): Promise<void> {
     try {
       // 先检查主键列的情况
-      const primaryKeyColumns = tableDefinition.columns.filter(
-        (col) => col.primaryKey
-      );
+      const primaryKeyColumns = tableDefinition.columns.filter((col) => col.primaryKey);
       const hasSinglePrimaryKey = primaryKeyColumns.length === 1;
       const hasCompositePrimaryKey = primaryKeyColumns.length > 1;
 
@@ -785,8 +717,7 @@ export class DatabaseMigrationService {
           let definition = `\`${col.name}\` ${this.getDataType(col)}`;
 
           // 只有单个主键时才在列定义中添加PRIMARY KEY
-          if (col.primaryKey && hasSinglePrimaryKey)
-            definition += " PRIMARY KEY";
+          if (col.primaryKey && hasSinglePrimaryKey) definition += " PRIMARY KEY";
           if (col.autoIncrement) definition += " AUTO_INCREMENT";
           if (col.allowNull === false) definition += " NOT NULL";
           if (col.unique) definition += " UNIQUE";
@@ -796,8 +727,7 @@ export class DatabaseMigrationService {
             definition += this.getDefaultValue(col);
           }
 
-          if (col.comment)
-            definition += ` COMMENT '${this.escapeComment(col.comment)}'`;
+          if (col.comment) definition += ` COMMENT '${this.escapeComment(col.comment)}'`;
 
           return definition;
         })
@@ -807,9 +737,7 @@ export class DatabaseMigrationService {
 
       // 如果有复合主键，添加复合主键约束
       if (hasCompositePrimaryKey) {
-        const primaryKeyFields = primaryKeyColumns
-          .map((col) => `\`${col.name}\``)
-          .join(", ");
+        const primaryKeyFields = primaryKeyColumns.map((col) => `\`${col.name}\``).join(", ");
         createTableSQL += `, PRIMARY KEY (${primaryKeyFields})`;
       }
 
@@ -867,18 +795,11 @@ export class DatabaseMigrationService {
   ): Promise<void> {
     try {
       // 检查表是否存在
-      const tableExists = await this.tableExistsWithConnection(
-        connection,
-        tableName
-      );
+      const tableExists = await this.tableExistsWithConnection(connection, tableName);
 
       if (!tableExists) {
         // 如果表不存在，先创建
-        await this.createTableWithConnection(
-          connection,
-          tableName,
-          tableDefinition
-        );
+        await this.createTableWithConnection(connection, tableName, tableDefinition);
         return;
       }
 
@@ -887,13 +808,8 @@ export class DatabaseMigrationService {
       // 获取现有表的列信息
       try {
         // 先获取当前数据库名称
-        const [dbResult] = await connection.query(
-          "SELECT DATABASE() as db_name"
-        );
-        const currentDb =
-          Array.isArray(dbResult) && dbResult.length > 0
-            ? (dbResult[0] as any).db_name
-            : "unknown";
+        const [dbResult] = await connection.query("SELECT DATABASE() as db_name");
+        const currentDb = Array.isArray(dbResult) && dbResult.length > 0 ? (dbResult[0] as any).db_name : "unknown";
 
         // 使用更可靠的方式获取数据库名
         let actualDbName = currentDb;
@@ -901,9 +817,7 @@ export class DatabaseMigrationService {
           // 从连接配置中获取数据库名
           const config = connection.config;
           actualDbName = config.database || "";
-          logger.info(
-            `🔍 表 ${tableName} 从连接配置获取数据库名: ${actualDbName}`
-          );
+          logger.info(`🔍 表 ${tableName} 从连接配置获取数据库名: ${actualDbName}`);
         }
 
         const existingColumnsQueryResult = await connection.query(
@@ -921,10 +835,7 @@ export class DatabaseMigrationService {
         let existingColumns: any[] = [];
         if (Array.isArray(existingColumnsResult)) {
           existingColumns = existingColumnsResult;
-        } else if (
-          existingColumnsResult &&
-          typeof existingColumnsResult === "object"
-        ) {
+        } else if (existingColumnsResult && typeof existingColumnsResult === "object") {
           // 如果是对象，将其转换为数组
           existingColumns = Object.values(existingColumnsResult);
           logger.info(`🔍 表 ${tableName} 转换为数组后的列:`, existingColumns);
@@ -935,86 +846,46 @@ export class DatabaseMigrationService {
 
         // 验证数组元素的有效性
         existingColumns = existingColumns.filter(
-          (col) =>
-            col && typeof col === "object" && (col.COLUMN_NAME || col.Field)
+          (col) => col && typeof col === "object" && (col.COLUMN_NAME || col.Field)
         );
 
         // 如果information_schema返回空结果，强制使用DESCRIBE作为主要方法
         if (existingColumns.length === 0) {
           logger.info(`🔍 表 ${tableName} 当前数据库: ${actualDbName}`);
-          logger.info(
-            `🔍 表 ${tableName} 完整查询结果:`,
-            existingColumnsQueryResult
-          );
-          logger.info(
-            `🔍 表 ${tableName} 从 information_schema 查询到的列:`,
-            existingColumnsResult
-          );
+          logger.info(`🔍 表 ${tableName} 完整查询结果:`, existingColumnsQueryResult);
+          logger.info(`🔍 表 ${tableName} 从 information_schema 查询到的列:`, existingColumnsResult);
           logger.info(
             `🔍 表 ${tableName} 查询结果条数: ${
-              Array.isArray(existingColumnsResult)
-                ? existingColumnsResult.length
-                : 0
+              Array.isArray(existingColumnsResult) ? existingColumnsResult.length : 0
             }`
           );
           throw new Error("information_schema返回空结果，使用DESCRIBE备用方案");
         }
 
-        const existingColumnNames = existingColumns.map(
-          (col) => col.COLUMN_NAME || col.Field
-        );
-        const definedColumnNames = tableDefinition.columns.map(
-          (col) => col.name
-        );
+        const existingColumnNames = existingColumns.map((col) => col.COLUMN_NAME || col.Field);
+        const definedColumnNames = tableDefinition.columns.map((col) => col.name);
 
         // 1. 删除不再需要的列（但保留主键和特殊列）
-        await this.removeUnwantedColumns(
-          connection,
-          tableName,
-          existingColumns,
-          definedColumnNames
-        );
+        await this.removeUnwantedColumns(connection, tableName, existingColumns, definedColumnNames);
 
         // 2. 添加新列
-        await this.addMissingColumns(
-          connection,
-          tableName,
-          tableDefinition.columns,
-          existingColumnNames
-        );
+        await this.addMissingColumns(connection, tableName, tableDefinition.columns, existingColumnNames);
 
         // 3. 更新现有列的属性（comment、类型、默认值等）
-        await this.updateExistingColumns(
-          connection,
-          tableName,
-          existingColumns,
-          tableDefinition.columns
-        );
+        await this.updateExistingColumns(connection, tableName, existingColumns, tableDefinition.columns);
 
         // 4. 同步索引（删除不需要的，添加缺失的）
-        await this.synchronizeIndexes(
-          connection,
-          tableName,
-          tableDefinition.indexes || [],
-          tableDefinition
-        );
+        await this.synchronizeIndexes(connection, tableName, tableDefinition.indexes || [], tableDefinition);
       } catch (columnQueryError) {
         logger.error(`查询表 ${tableName} 的列信息失败:`, columnQueryError);
 
         // 备用方案：使用DESCRIBE命令和单独的comment查询
         try {
-          const [describeResult] = await connection.query(
-            `DESCRIBE \`${tableName}\``
-          );
+          const [describeResult] = await connection.query(`DESCRIBE \`${tableName}\``);
 
+          logger.info(`🔍 表 ${tableName} 从 DESCRIBE 查询到的列:`, describeResult);
           logger.info(
-            `🔍 表 ${tableName} 从 DESCRIBE 查询到的列:`,
-            describeResult
-          );
-          logger.info(
-            `🔍 表 ${tableName} DESCRIBE 结果条数: ${
-              Array.isArray(describeResult) ? describeResult.length : 0
-            }`
+            `🔍 表 ${tableName} DESCRIBE 结果条数: ${Array.isArray(describeResult) ? describeResult.length : 0}`
           );
 
           // 如果是数组，输出每一列的详细信息
@@ -1032,9 +903,7 @@ export class DatabaseMigrationService {
           }
 
           // 验证数组元素的有效性
-          columns = columns.filter(
-            (col) => col && typeof col === "object" && col.Field
-          );
+          columns = columns.filter((col) => col && typeof col === "object" && col.Field);
 
           // 获取comment信息（DESCRIBE不包含comment，需要单独查询）
           try {
@@ -1054,24 +923,15 @@ export class DatabaseMigrationService {
             }
 
             // 验证comment数据的有效性
-            commentData = commentData.filter(
-              (c) => c && typeof c === "object" && c.COLUMN_NAME
-            );
+            commentData = commentData.filter((c) => c && typeof c === "object" && c.COLUMN_NAME);
 
             // 将comment信息合并到columns中
             for (const col of columns) {
-              const commentInfo = commentData.find(
-                (c) => c.COLUMN_NAME === col.Field
-              );
-              col.COLUMN_COMMENT = commentInfo
-                ? commentInfo.COLUMN_COMMENT
-                : "";
+              const commentInfo = commentData.find((c) => c.COLUMN_NAME === col.Field);
+              col.COLUMN_COMMENT = commentInfo ? commentInfo.COLUMN_COMMENT : "";
             }
           } catch (commentError) {
-            logger.warn(
-              `获取comment信息失败，将跳过comment更新:`,
-              commentError
-            );
+            logger.warn(`获取comment信息失败，将跳过comment更新:`, commentError);
             // 如果comment查询失败，给所有列添加空comment
             for (const col of columns) {
               col.COLUMN_COMMENT = "";
@@ -1079,47 +939,21 @@ export class DatabaseMigrationService {
           }
 
           const existingColumnNames = columns.map((col) => col.Field);
-          const definedColumnNames = tableDefinition.columns.map(
-            (col) => col.name
-          );
+          const definedColumnNames = tableDefinition.columns.map((col) => col.name);
           // 删除不再需要的列
-          await this.removeUnwantedColumns(
-            connection,
-            tableName,
-            columns,
-            definedColumnNames
-          );
+          await this.removeUnwantedColumns(connection, tableName, columns, definedColumnNames);
 
           // 添加新列
-          await this.addMissingColumns(
-            connection,
-            tableName,
-            tableDefinition.columns,
-            existingColumnNames
-          );
+          await this.addMissingColumns(connection, tableName, tableDefinition.columns, existingColumnNames);
 
           // 更新现有列的属性
-          await this.updateExistingColumns(
-            connection,
-            tableName,
-            columns,
-            tableDefinition.columns
-          );
+          await this.updateExistingColumns(connection, tableName, columns, tableDefinition.columns);
 
           // 同步索引
-          await this.synchronizeIndexes(
-            connection,
-            tableName,
-            tableDefinition.indexes || [],
-            tableDefinition
-          );
+          await this.synchronizeIndexes(connection, tableName, tableDefinition.indexes || [], tableDefinition);
         } catch (describeError) {
           logger.error(`DESCRIBE命令也失败了:`, describeError);
-          throw new Error(
-            `无法获取表 ${tableName} 的列信息: ${
-              (columnQueryError as Error).message || "未知错误"
-            }`
-          );
+          throw new Error(`无法获取表 ${tableName} 的列信息: ${(columnQueryError as Error).message || "未知错误"}`);
         }
       }
     } catch (error) {
@@ -1186,8 +1020,7 @@ export class DatabaseMigrationService {
     for (const column of definedColumns) {
       // 使用不区分大小写的比较
       const columnExists = existingColumnNames.some(
-        (existingName) =>
-          existingName.toLowerCase() === column.name.toLowerCase()
+        (existingName) => existingName.toLowerCase() === column.name.toLowerCase()
       );
       if (!columnExists) {
         await this.addColumnWithConnection(connection, tableName, column);
@@ -1208,9 +1041,7 @@ export class DatabaseMigrationService {
   ): Promise<void> {
     for (const definedColumn of definedColumns) {
       // 找到对应的现有列
-      const existingColumn = existingColumns.find(
-        (col) => (col.COLUMN_NAME || col.Field) === definedColumn.name
-      );
+      const existingColumn = existingColumns.find((col) => (col.COLUMN_NAME || col.Field) === definedColumn.name);
 
       if (!existingColumn) {
         // 列不存在，跳过（应该已经在addMissingColumns中处理了）
@@ -1222,32 +1053,22 @@ export class DatabaseMigrationService {
       // 详细调试信息：显示原始数据
 
       // 获取当前comment，处理NULL和undefined情况
-      let currentComment =
-        existingColumn.COLUMN_COMMENT || existingColumn.Comment;
+      let currentComment = existingColumn.COLUMN_COMMENT || existingColumn.Comment;
       if (currentComment === null || currentComment === undefined) {
         currentComment = "";
       } else {
         currentComment = String(currentComment).trim(); // 去除前后空格
       }
 
-      const currentFullType =
-        existingColumn.COLUMN_TYPE || existingColumn.Type || "";
-      const currentNullable =
-        (
-          existingColumn.IS_NULLABLE ||
-          existingColumn.Null ||
-          "YES"
-        ).toUpperCase() === "YES";
-      const currentDefault =
-        existingColumn.COLUMN_DEFAULT || existingColumn.Default;
+      const currentFullType = existingColumn.COLUMN_TYPE || existingColumn.Type || "";
+      const currentNullable = (existingColumn.IS_NULLABLE || existingColumn.Null || "YES").toUpperCase() === "YES";
+      const currentDefault = existingColumn.COLUMN_DEFAULT || existingColumn.Default;
       const currentKey = existingColumn.COLUMN_KEY || existingColumn.Key || "";
       const currentExtra = existingColumn.EXTRA || existingColumn.Extra || "";
 
       // 判断是否为主键和自增
       const currentIsPrimaryKey = currentKey.toUpperCase() === "PRI";
-      const currentIsAutoIncrement = currentExtra
-        .toUpperCase()
-        .includes("AUTO_INCREMENT");
+      const currentIsAutoIncrement = currentExtra.toUpperCase().includes("AUTO_INCREMENT");
 
       // 检查是否需要更新
       let needsUpdate = false;
@@ -1260,9 +1081,7 @@ export class DatabaseMigrationService {
 
       if (normalizedCurrentComment !== normalizedExpectedComment) {
         needsUpdate = true;
-        updateReasons.push(
-          `comment: "${currentComment}" → "${expectedComment}"`
-        );
+        updateReasons.push(`comment: "${currentComment}" → "${expectedComment}"`);
       }
 
       // 检查nullable - 直接使用TableSchema中明确设置的allowNull值
@@ -1271,9 +1090,7 @@ export class DatabaseMigrationService {
 
       if (currentNullable !== expectedNullable) {
         needsUpdate = true;
-        updateReasons.push(
-          `nullable: ${currentNullable} → ${expectedNullable}`
-        );
+        updateReasons.push(`nullable: ${currentNullable} → ${expectedNullable}`);
       }
 
       // 检查默认值（智能比较）
@@ -1290,14 +1107,14 @@ export class DatabaseMigrationService {
           updateReasons.push(
             `default: "${currentDefault}" (${typeof currentDefault}) → "${expectedDefault}" (${typeof expectedDefault})`
           );
-          
+
           // 添加详细的默认值调试信息
           logger.info(`🔍 默认值详细比较 - 列: ${columnName}`);
           logger.info(`  📊 数据库原始值: "${currentDefault}" (类型: ${typeof currentDefault})`);
           logger.info(`  📊 配置原始值: "${expectedDefault}" (类型: ${typeof expectedDefault})`);
           logger.info(`  📊 标准化后 - 数据库: "${normalizedCurrent}"`);
           logger.info(`  📊 标准化后 - 配置: "${normalizedExpected}"`);
-          logger.info(`  📊 比较结果: ${normalizedCurrent === normalizedExpected ? '相等' : '不相等'}`);
+          logger.info(`  📊 比较结果: ${normalizedCurrent === normalizedExpected ? "相等" : "不相等"}`);
         }
       }
 
@@ -1312,9 +1129,7 @@ export class DatabaseMigrationService {
         // 例如：'enum(\'active\',\'inactive\',\'pending\')'
         if (this.isEnumTypeNeedsUpdate(currentFullType, definedColumn)) {
           needsUpdate = true;
-          updateReasons.push(
-            `${definedType} values: ${currentFullType} → ${expectedDataType}`
-          );
+          updateReasons.push(`${definedType} values: ${currentFullType} → ${expectedDataType}`);
         }
       } else {
         // 对于非ENUM/SET类型，比较完整的类型定义
@@ -1333,9 +1148,7 @@ export class DatabaseMigrationService {
         const expectedIsPrimaryKey = definedColumn.primaryKey === true;
         if (currentIsPrimaryKey !== expectedIsPrimaryKey) {
           needsUpdate = true;
-          updateReasons.push(
-            `primaryKey: ${currentIsPrimaryKey} → ${expectedIsPrimaryKey}`
-          );
+          updateReasons.push(`primaryKey: ${currentIsPrimaryKey} → ${expectedIsPrimaryKey}`);
         }
       }
 
@@ -1343,25 +1156,19 @@ export class DatabaseMigrationService {
       const expectedIsAutoIncrement = definedColumn.autoIncrement === true;
       if (currentIsAutoIncrement !== expectedIsAutoIncrement) {
         needsUpdate = true;
-        updateReasons.push(
-          `autoIncrement: ${currentIsAutoIncrement} → ${expectedIsAutoIncrement}`
-        );
+        updateReasons.push(`autoIncrement: ${currentIsAutoIncrement} → ${expectedIsAutoIncrement}`);
       }
 
       if (needsUpdate) {
         // 当检测到需要更新时，打印详细的调试信息
         logger.info(`🔍 列 ${columnName} 需要更新，详细信息:`);
-        logger.info(
-          `  📊 数据库 DATA_TYPE: "${
-            existingColumn.DATA_TYPE || existingColumn.Type || ""
-          }"`
-        );
+        logger.info(`  📊 数据库 DATA_TYPE: "${existingColumn.DATA_TYPE || existingColumn.Type || ""}"`);
         logger.info(`  📊 数据库 COLUMN_TYPE: "${currentFullType}"`);
         logger.info(`  📊 期望类型: "${this.getDataType(definedColumn)}"`);
         logger.info(`  📊 更新原因: ${updateReasons.join(", ")}`);
 
         // 如果涉及默认值差异，显示标准化后的比较结果
-        if (updateReasons.some(reason => reason.includes('default:'))) {
+        if (updateReasons.some((reason) => reason.includes("default:"))) {
           const expectedDefault = definedColumn.defaultValue;
           if (expectedDefault !== undefined) {
             const normalizedCurrent = this.normalizeDefaultValue(currentDefault);
@@ -1375,11 +1182,8 @@ export class DatabaseMigrationService {
         const definedType = definedColumn.type.toUpperCase();
         if (definedType !== "ENUM" && definedType !== "SET") {
           const normalizedCurrentType = this.normalizeDataType(currentFullType);
-          const normalizedExpectedType =
-            this.normalizeDataType(expectedDataType);
-          logger.info(
-            `  📊 标准化后 - 当前: "${normalizedCurrentType}", 期望: "${normalizedExpectedType}"`
-          );
+          const normalizedExpectedType = this.normalizeDataType(expectedDataType);
+          logger.info(`  📊 标准化后 - 当前: "${normalizedCurrentType}", 期望: "${normalizedExpectedType}"`);
         }
 
         try {
@@ -1396,9 +1200,7 @@ export class DatabaseMigrationService {
           }
 
           // 构建ALTER COLUMN语句（不包含PRIMARY KEY，因为已单独处理）
-          let columnDefinition = `\`${definedColumn.name}\` ${this.getDataType(
-            definedColumn
-          )}`;
+          let columnDefinition = `\`${definedColumn.name}\` ${this.getDataType(definedColumn)}`;
 
           // 添加自增属性
           if (definedColumn.autoIncrement) {
@@ -1422,9 +1224,7 @@ export class DatabaseMigrationService {
           }
 
           if (definedColumn.comment) {
-            columnDefinition += ` COMMENT '${this.escapeComment(
-              definedColumn.comment
-            )}'`;
+            columnDefinition += ` COMMENT '${this.escapeComment(definedColumn.comment)}'`;
           }
 
           let alterSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${columnDefinition}`;
@@ -1455,10 +1255,7 @@ export class DatabaseMigrationService {
   /**
    * 安全删除主键（检查外键约束）
    */
-  private async safelyDropPrimaryKey(
-    connection: Sequelize,
-    tableName: string
-  ): Promise<void> {
+  private async safelyDropPrimaryKey(connection: Sequelize, tableName: string): Promise<void> {
     try {
       // 首先确认表确实有主键
       const primaryKeyCheckResult = await connection.query(`
@@ -1482,7 +1279,7 @@ export class DatabaseMigrationService {
         return;
       }
 
-      logger.info(`🔍 表 ${tableName} 当前主键列: ${primaryKeys.map(pk => pk.COLUMN_NAME).join(', ')}`);
+      logger.info(`🔍 表 ${tableName} 当前主键列: ${primaryKeys.map((pk) => pk.COLUMN_NAME).join(", ")}`);
 
       // 检查是否有外键约束引用此表的主键
       const foreignKeyQueryResult = await connection.query(`
@@ -1510,21 +1307,14 @@ export class DatabaseMigrationService {
       let fkConstraints: any[] = [];
       if (Array.isArray(foreignKeyConstraints)) {
         fkConstraints = foreignKeyConstraints;
-      } else if (
-        foreignKeyConstraints &&
-        typeof foreignKeyConstraints === "object"
-      ) {
+      } else if (foreignKeyConstraints && typeof foreignKeyConstraints === "object") {
         fkConstraints = Object.values(foreignKeyConstraints);
       }
 
       if (fkConstraints.length > 0) {
-        logger.warn(
-          `⚠️ 表 ${tableName} 的主键被以下外键约束引用，无法删除主键:`
-        );
+        logger.warn(`⚠️ 表 ${tableName} 的主键被以下外键约束引用，无法删除主键:`);
         fkConstraints.forEach((fk: any) => {
-          logger.warn(
-            `  - 约束: ${fk.CONSTRAINT_NAME}, 引用表: ${fk.REFERENCING_TABLE}.${fk.REFERENCING_COLUMN}`
-          );
+          logger.warn(`  - 约束: ${fk.CONSTRAINT_NAME}, 引用表: ${fk.REFERENCING_TABLE}.${fk.REFERENCING_COLUMN}`);
         });
         logger.warn(`💡 跳过主键删除操作，保持现有主键结构`);
         return;
@@ -1545,18 +1335,13 @@ export class DatabaseMigrationService {
       let autoIncCols: any[] = [];
       if (Array.isArray(autoIncrementColumns)) {
         autoIncCols = autoIncrementColumns;
-      } else if (
-        autoIncrementColumns &&
-        typeof autoIncrementColumns === "object"
-      ) {
+      } else if (autoIncrementColumns && typeof autoIncrementColumns === "object") {
         autoIncCols = Object.values(autoIncrementColumns);
       }
 
       // 如果有AUTO_INCREMENT列，需要先移除AUTO_INCREMENT属性
       if (autoIncCols.length > 0) {
-        logger.warn(
-          `⚠️ 表 ${tableName} 有AUTO_INCREMENT列，需要先移除AUTO_INCREMENT属性才能删除主键`
-        );
+        logger.warn(`⚠️ 表 ${tableName} 有AUTO_INCREMENT列，需要先移除AUTO_INCREMENT属性才能删除主键`);
 
         for (const autoIncCol of autoIncCols) {
           const columnName = autoIncCol.COLUMN_NAME;
@@ -1678,10 +1463,7 @@ export class DatabaseMigrationService {
   /**
    * 比较ENUM/SET类型是否需要更新
    */
-  private isEnumTypeNeedsUpdate(
-    currentColumnType: string,
-    definedColumn: ColumnDefinition
-  ): boolean {
+  private isEnumTypeNeedsUpdate(currentColumnType: string, definedColumn: ColumnDefinition): boolean {
     const definedType = definedColumn.type.toUpperCase();
 
     // 只处理ENUM和SET类型
@@ -1736,7 +1518,6 @@ export class DatabaseMigrationService {
    */
   private parseEnumValues(valuesStr: string): string[] {
     if (!valuesStr) return [];
-
 
     const values: string[] = [];
     let current = "";
@@ -1904,9 +1685,7 @@ export class DatabaseMigrationService {
   ): Promise<void> {
     try {
       // 获取现有索引
-      const [showIndexResult] = await connection.query(
-        `SHOW INDEX FROM \`${tableName}\``
-      );
+      const [showIndexResult] = await connection.query(`SHOW INDEX FROM \`${tableName}\``);
 
       let indexData: any[] = [];
       if (Array.isArray(showIndexResult)) {
@@ -1917,11 +1696,7 @@ export class DatabaseMigrationService {
 
       // 提取现有索引名（去重，排除主键）
       const existingIndexNames = [
-        ...new Set(
-          indexData
-            .filter((idx) => idx.Key_name !== "PRIMARY")
-            .map((idx) => idx.Key_name)
-        ),
+        ...new Set(indexData.filter((idx) => idx.Key_name !== "PRIMARY").map((idx) => idx.Key_name)),
       ];
 
       // 收集所有应该存在的索引名称（包括在列上设置unique的字段）
@@ -1930,27 +1705,17 @@ export class DatabaseMigrationService {
       // 如果提供了tableDefinition，检查列上的unique属性
       const uniqueColumnNames: string[] = [];
       if (tableDefinition) {
-        const uniqueColumns = tableDefinition.columns.filter(
-          (col) => col.unique
-        );
+        const uniqueColumns = tableDefinition.columns.filter((col) => col.unique);
         uniqueColumnNames.push(...uniqueColumns.map((col) => col.name));
 
         // 对于unique列，我们需要在现有索引中找到对应的唯一索引
         for (const col of uniqueColumns) {
           // 查找匹配此列的唯一索引
-          const matchingUniqueIndexes = existingIndexNames.filter(
-            (indexName) => {
-              const indexRows = indexData.filter(
-                (idx) => idx.Key_name === indexName
-              );
-              // 检查是否是单列唯一索引且列名匹配
-              return (
-                indexRows.length === 1 &&
-                indexRows[0].Non_unique === 0 &&
-                indexRows[0].Column_name === col.name
-              );
-            }
-          );
+          const matchingUniqueIndexes = existingIndexNames.filter((indexName) => {
+            const indexRows = indexData.filter((idx) => idx.Key_name === indexName);
+            // 检查是否是单列唯一索引且列名匹配
+            return indexRows.length === 1 && indexRows[0].Non_unique === 0 && indexRows[0].Column_name === col.name;
+          });
 
           // 将找到的匹配索引名加入到定义列表中，避免被删除
           definedIndexNames.push(...matchingUniqueIndexes);
@@ -1991,16 +1756,13 @@ export class DatabaseMigrationService {
       // 2. 添加缺失的索引
       for (const index of definedIndexes) {
         const indexExists = existingIndexNames.some(
-          (existingName) =>
-            existingName.toLowerCase() === index.name.toLowerCase()
+          (existingName) => existingName.toLowerCase() === index.name.toLowerCase()
         );
 
         if (!indexExists) {
           try {
             const unique = index.unique ? "UNIQUE" : "";
-            const fields = index.fields
-              .map((field) => `\`${field}\``)
-              .join(", ");
+            const fields = index.fields.map((field) => `\`${field}\``).join(", ");
             const sql = `CREATE ${unique} INDEX \`${index.name}\` ON \`${tableName}\` (${fields})`;
 
             // 记录SQL执行历史
@@ -2062,22 +1824,13 @@ export class DatabaseMigrationService {
         let primaryKeyColumns: any[] = [];
         if (Array.isArray(existingPrimaryKeys)) {
           primaryKeyColumns = existingPrimaryKeys;
-        } else if (
-          existingPrimaryKeys &&
-          typeof existingPrimaryKeys === "object"
-        ) {
+        } else if (existingPrimaryKeys && typeof existingPrimaryKeys === "object") {
           primaryKeyColumns = Object.values(existingPrimaryKeys);
         }
 
         if (primaryKeyColumns.length > 0) {
-          const existingPrimaryKeyNames = primaryKeyColumns.map(
-            (col) => col.COLUMN_NAME
-          );
-          logger.warn(
-            `⚠️ 表 ${tableName} 已存在主键: [${existingPrimaryKeyNames.join(
-              ", "
-            )}]`
-          );
+          const existingPrimaryKeyNames = primaryKeyColumns.map((col) => col.COLUMN_NAME);
+          logger.warn(`⚠️ 表 ${tableName} 已存在主键: [${existingPrimaryKeyNames.join(", ")}]`);
 
           // 使用安全删除主键方法
           await this.safelyDropPrimaryKey(connection, tableName);
@@ -2098,22 +1851,13 @@ export class DatabaseMigrationService {
         let autoIncColumns: any[] = [];
         if (Array.isArray(existingAutoIncColumns)) {
           autoIncColumns = existingAutoIncColumns;
-        } else if (
-          existingAutoIncColumns &&
-          typeof existingAutoIncColumns === "object"
-        ) {
+        } else if (existingAutoIncColumns && typeof existingAutoIncColumns === "object") {
           autoIncColumns = Object.values(existingAutoIncColumns);
         }
 
         if (autoIncColumns.length > 0) {
-          const existingAutoIncNames = autoIncColumns.map(
-            (col) => col.COLUMN_NAME
-          );
-          logger.warn(
-            `⚠️ 表 ${tableName} 已存在AUTO_INCREMENT列: [${existingAutoIncNames.join(
-              ", "
-            )}]`
-          );
+          const existingAutoIncNames = autoIncColumns.map((col) => col.COLUMN_NAME);
+          logger.warn(`⚠️ 表 ${tableName} 已存在AUTO_INCREMENT列: [${existingAutoIncNames.join(", ")}]`);
 
           // 移除现有AUTO_INCREMENT属性
           for (const existingCol of existingAutoIncNames) {
@@ -2152,8 +1896,7 @@ export class DatabaseMigrationService {
         columnDefinition += this.getDefaultValue(column);
       }
 
-      if (column.comment)
-        columnDefinition += ` COMMENT '${this.escapeComment(column.comment)}'`;
+      if (column.comment) columnDefinition += ` COMMENT '${this.escapeComment(column.comment)}'`;
 
       // 先添加列（不设置主键和AUTO_INCREMENT）
       let alterSQL = `ALTER TABLE \`${tableName}\` ADD COLUMN ${columnDefinition}`;
@@ -2193,17 +1936,11 @@ export class DatabaseMigrationService {
 
       // 最后设置AUTO_INCREMENT属性（必须在设置键之后）
       if (column.autoIncrement) {
-        let modifyColumnDefinition = `\`${column.name}\` ${this.getDataType(
-          column
-        )} AUTO_INCREMENT`;
+        let modifyColumnDefinition = `\`${column.name}\` ${this.getDataType(column)} AUTO_INCREMENT`;
 
         if (column.allowNull === false) modifyColumnDefinition += " NOT NULL";
-        if (column.unique && !column.primaryKey)
-          modifyColumnDefinition += " UNIQUE";
-        if (column.comment)
-          modifyColumnDefinition += ` COMMENT '${this.escapeComment(
-            column.comment
-          )}'`;
+        if (column.unique && !column.primaryKey) modifyColumnDefinition += " UNIQUE";
+        if (column.comment) modifyColumnDefinition += ` COMMENT '${this.escapeComment(column.comment)}'`;
 
         const modifyAutoIncSQL = `ALTER TABLE \`${tableName}\` MODIFY COLUMN ${modifyColumnDefinition}`;
 
@@ -2223,28 +1960,20 @@ export class DatabaseMigrationService {
       }
     } catch (error) {
       // 检查是否是列已存在的错误
-      if (
-        error instanceof Error &&
-        error.message.includes("Duplicate column name")
-      ) {
+      if (error instanceof Error && error.message.includes("Duplicate column name")) {
         return;
       }
       logger.error(`为表 ${tableName} 添加列 ${column.name} 失败:`, error);
 
       // 检查是否是多主键错误
-      if (
-        error instanceof Error &&
-        error.message.toLowerCase().includes("multiple primary key")
-      ) {
+      if (error instanceof Error && error.message.toLowerCase().includes("multiple primary key")) {
         logger.error(`❌ 多主键错误: ${error.message}`);
       }
 
       // 检查是否是AUTO_INCREMENT相关错误
       if (
         error instanceof Error &&
-        (error.message
-          .toLowerCase()
-          .includes("there can be only one auto column") ||
+        (error.message.toLowerCase().includes("there can be only one auto column") ||
           error.message.toLowerCase().includes("must be defined as a key"))
       ) {
         logger.error(`❌ AUTO_INCREMENT错误: ${error.message}`);
@@ -2272,17 +2001,13 @@ export class DatabaseMigrationService {
       } else {
         // 如果没有提供values，检查是否使用了length（向后兼容）
         if (column.length) {
-          logger.warn(
-            `⚠️  ${type}类型使用length参数已过时，建议使用values数组定义枚举值`
-          );
+          logger.warn(`⚠️  ${type}类型使用length参数已过时，建议使用values数组定义枚举值`);
           logger.warn(`💡 建议配置: "values": ["value1", "value2", "value3"]`);
           // 生成一个基于length的默认枚举（向后兼容）
           return `${type}('default')`;
         } else {
           logger.error(`❌ ${type}类型必须定义values数组或length参数`);
-          throw new Error(
-            `${type}类型必须定义values数组，例如: values: ["value1", "value2"]`
-          );
+          throw new Error(`${type}类型必须定义values数组，例如: values: ["value1", "value2"]`);
         }
       }
     } else if (type === "DECIMAL" || type === "NUMERIC") {
@@ -2344,10 +2069,7 @@ export class DatabaseMigrationService {
       "SET", // ENUM和SET需要特殊处理
     ];
 
-    return (
-      typesWithLength.includes(dataType) &&
-      !typesWithoutLength.includes(dataType)
-    );
+    return typesWithLength.includes(dataType) && !typesWithoutLength.includes(dataType);
   }
 
   /**
@@ -2369,9 +2091,7 @@ export class DatabaseMigrationService {
     if (columnType === "TIMESTAMP" || columnType === "DATETIME") {
       if (column.defaultValue === "CURRENT_TIMESTAMP") {
         return " DEFAULT CURRENT_TIMESTAMP";
-      } else if (
-        column.defaultValue === "CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
-      ) {
+      } else if (column.defaultValue === "CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP") {
         return " DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP";
       }
     }
@@ -2387,11 +2107,7 @@ export class DatabaseMigrationService {
   /**
    * 格式化日期用于表名
    */
-  private formatDateForTable(
-    date: Date,
-    interval: "day" | "month" | "year",
-    customFormat?: string
-  ): string {
+  private formatDateForTable(date: Date, interval: "day" | "month" | "year", customFormat?: string): string {
     // 如果提供了自定义格式，使用自定义格式
     if (customFormat) {
       return this.applyDateFormat(date, customFormat);
@@ -2399,15 +2115,12 @@ export class DatabaseMigrationService {
 
     // 默认格式
     if (interval === "day") {
-      return `${date.getFullYear()}_${String(date.getMonth() + 1).padStart(
-        2,
-        "0"
-      )}_${String(date.getDate()).padStart(2, "0")}`;
-    } else if (interval === "month") {
-      return `${date.getFullYear()}_${String(date.getMonth() + 1).padStart(
+      return `${date.getFullYear()}_${String(date.getMonth() + 1).padStart(2, "0")}_${String(date.getDate()).padStart(
         2,
         "0"
       )}`;
+    } else if (interval === "month") {
+      return `${date.getFullYear()}_${String(date.getMonth() + 1).padStart(2, "0")}`;
     } else {
       return `${date.getFullYear()}`;
     }
@@ -2440,16 +2153,10 @@ export class DatabaseMigrationService {
   /**
    * 使用指定连接删除单个表
    */
-  private async dropTableWithConnection(
-    connection: Sequelize,
-    tableName: string
-  ): Promise<void> {
+  private async dropTableWithConnection(connection: Sequelize, tableName: string): Promise<void> {
     try {
       // 检查表是否存在
-      const tableExists = await this.tableExistsWithConnection(
-        connection,
-        tableName
-      );
+      const tableExists = await this.tableExistsWithConnection(connection, tableName);
 
       if (!tableExists) {
         return;
@@ -2493,10 +2200,7 @@ export class DatabaseMigrationService {
   }> {
     try {
       // 生成删除批次ID
-      this.currentMigrationBatch = `drop_${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(
-        0,
-        8
-      )}`;
+      this.currentMigrationBatch = `drop_${tableName}_${databaseType}_${Date.now()}_${uuidv4().substring(0, 8)}`;
 
       // 获取所有企业
       const enterprises = await Enterprise.findAll({
@@ -2508,20 +2212,13 @@ export class DatabaseMigrationService {
 
       for (const enterprise of enterprises) {
         try {
-          const result = await this.dropTableForEnterprise(
-            enterprise,
-            tableName,
-            databaseType,
-            partitionType
-          );
+          const result = await this.dropTableForEnterprise(enterprise, tableName, databaseType, partitionType);
           droppedTables.push(...result.droppedTables);
           if (result.errors && result.errors.length > 0) {
             errors.push(...result.errors);
           }
         } catch (error) {
-          const errorMsg = `企业 ${enterprise.enterprise_name} (${
-            enterprise.enterprise_id
-          }) 删除表失败: ${
+          const errorMsg = `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 删除表失败: ${
             error instanceof Error ? error.message : "未知错误"
           }`;
           logger.error(errorMsg);
@@ -2570,10 +2267,7 @@ export class DatabaseMigrationService {
   }> {
     try {
       // 获取对应数据库类型的连接
-      const connection = await this.connectionManager.getConnection(
-        enterprise,
-        databaseType
-      );
+      const connection = await this.connectionManager.getConnection(enterprise, databaseType);
 
       const droppedTables: string[] = [];
       const errors: string[] = [];
@@ -2582,25 +2276,14 @@ export class DatabaseMigrationService {
       if (partitionType === "store") {
         // 门店分表：删除所有门店相关的表
         const storePattern = `${tableName}_store_%`;
-        const tables = await this.getTablesMatchingPattern(
-          connection,
-          storePattern
-        );
+        const tables = await this.getTablesMatchingPattern(connection, storePattern);
 
         for (const table of tables) {
           try {
-            await this.dropSingleTable(
-              connection,
-              table,
-              databaseType,
-              partitionType,
-              "1.0.0"
-            );
+            await this.dropSingleTable(connection, table, databaseType, partitionType, "1.0.0");
             droppedTables.push(table);
           } catch (error) {
-            const errorMsg = `删除门店分表 ${table} 失败: ${
-              error instanceof Error ? error.message : "未知错误"
-            }`;
+            const errorMsg = `删除门店分表 ${table} 失败: ${error instanceof Error ? error.message : "未知错误"}`;
             logger.error(errorMsg);
             errors.push(errorMsg);
           }
@@ -2608,27 +2291,16 @@ export class DatabaseMigrationService {
       } else if (partitionType === "time") {
         // 时间分表：删除所有时间相关的表
         const timePattern = `${tableName}%`;
-        const tables = await this.getTablesMatchingPattern(
-          connection,
-          timePattern
-        );
+        const tables = await this.getTablesMatchingPattern(connection, timePattern);
 
         for (const table of tables) {
           // 验证是否是时间分表格式
           if (table !== tableName && table.startsWith(tableName)) {
             try {
-              await this.dropSingleTable(
-                connection,
-                table,
-                databaseType,
-                partitionType,
-                "1.0.0"
-              );
+              await this.dropSingleTable(connection, table, databaseType, partitionType, "1.0.0");
               droppedTables.push(table);
             } catch (error) {
-              const errorMsg = `删除时间分表 ${table} 失败: ${
-                error instanceof Error ? error.message : "未知错误"
-              }`;
+              const errorMsg = `删除时间分表 ${table} 失败: ${error instanceof Error ? error.message : "未知错误"}`;
               logger.error(errorMsg);
               errors.push(errorMsg);
             }
@@ -2636,25 +2308,14 @@ export class DatabaseMigrationService {
         }
       } else {
         // 普通表：只删除指定表名的表
-        const tableExists = await this.tableExistsWithConnection(
-          connection,
-          tableName
-        );
+        const tableExists = await this.tableExistsWithConnection(connection, tableName);
 
         if (tableExists) {
           try {
-            await this.dropSingleTable(
-              connection,
-              tableName,
-              databaseType,
-              partitionType || "none",
-              "1.0.0"
-            );
+            await this.dropSingleTable(connection, tableName, databaseType, partitionType || "none", "1.0.0");
             droppedTables.push(tableName);
           } catch (error) {
-            const errorMsg = `删除表 ${tableName} 失败: ${
-              error instanceof Error ? error.message : "未知错误"
-            }`;
+            const errorMsg = `删除表 ${tableName} 失败: ${error instanceof Error ? error.message : "未知错误"}`;
             logger.error(errorMsg);
             errors.push(errorMsg);
           }
@@ -2675,10 +2336,7 @@ export class DatabaseMigrationService {
 
       return result;
     } catch (error) {
-      logger.error(
-        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 删除表失败:`,
-        error
-      );
+      logger.error(`企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 删除表失败:`, error);
       throw error;
     }
   }
@@ -2686,10 +2344,7 @@ export class DatabaseMigrationService {
   /**
    * 获取匹配模式的表名列表
    */
-  private async getTablesMatchingPattern(
-    connection: Sequelize,
-    pattern: string
-  ): Promise<string[]> {
+  private async getTablesMatchingPattern(connection: Sequelize, pattern: string): Promise<string[]> {
     try {
       const query = `
         SELECT TABLE_NAME 
@@ -2799,9 +2454,7 @@ export class DatabaseMigrationService {
           results.push(resultItem);
           totalDeleted += result.droppedTables.length;
         } catch (error) {
-          const errorMsg = `删除表 ${tableName} 失败: ${
-            error instanceof Error ? error.message : "未知错误"
-          }`;
+          const errorMsg = `删除表 ${tableName} 失败: ${error instanceof Error ? error.message : "未知错误"}`;
           logger.error(errorMsg);
           results.push({
             tableName,
@@ -2889,16 +2542,9 @@ export class DatabaseMigrationService {
       }
 
       // 执行迁移
-      await this.migrateStoreTableForEnterprise(
-        targetEnterprise,
-        schema,
-        storeId
-      );
+      await this.migrateStoreTableForEnterprise(targetEnterprise, schema, storeId);
     } catch (error) {
-      logger.error(
-        `迁移门店分表 ${tableName} (门店: ${storeId}, 企业: ${enterpriseId}) 失败:`,
-        error
-      );
+      logger.error(`迁移门店分表 ${tableName} (门店: ${storeId}, 企业: ${enterpriseId}) 失败:`, error);
       throw error;
     }
   }
@@ -2916,29 +2562,15 @@ export class DatabaseMigrationService {
       this.currentSchema = schema;
 
       // 解析表结构定义
-      const tableDefinition: TableDefinition = JSON.parse(
-        schema.schema_definition
-      );
+      const tableDefinition: TableDefinition = JSON.parse(schema.schema_definition);
 
       // 获取数据库连接
-      const connection = await this.connectionManager.getConnection(
-        enterprise,
-        schema.database_type
-      );
+      const connection = await this.connectionManager.getConnection(enterprise, schema.database_type);
 
       // 直接为指定门店创建分表，不查询门店列表
-      await this.migrateTableWithConnection(
-        connection,
-        tableDefinition,
-        enterprise.enterprise_id,
-        storeId,
-        schema
-      );
+      await this.migrateTableWithConnection(connection, tableDefinition, enterprise.enterprise_id, storeId, schema);
     } catch (error) {
-      logger.error(
-        `企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`,
-        error
-      );
+      logger.error(`企业 ${enterprise.enterprise_name} (${enterprise.enterprise_id}) 门店 ${storeId} 迁移失败:`, error);
       throw error;
     } finally {
       // 清理当前schema
@@ -3083,10 +2715,7 @@ export class DatabaseMigrationService {
           try {
             await this.checkTableForEnterprise(enterprise, schema);
           } catch (error) {
-            logger.error(
-              `检查企业 ${enterprise.enterprise_name} 的表 ${schema.table_name} 失败:`,
-              error
-            );
+            logger.error(`检查企业 ${enterprise.enterprise_name} 的表 ${schema.table_name} 失败:`, error);
             // 继续处理其他表，不中断整个检查过程
           }
         }
@@ -3129,20 +2758,15 @@ export class DatabaseMigrationService {
 
         // 统计唯一的表数量（通过Set去重）
         const uniqueTables = new Set(
-          this.collectedSqls
-            .filter((s) => s.database_type === dbType)
-            .map((s) => `${s.enterprise_id}_${s.table_name}`)
+          this.collectedSqls.filter((s) => s.database_type === dbType).map((s) => `${s.enterprise_id}_${s.table_name}`)
         );
         summaryByDatabaseType[dbType].total_tables = uniqueTables.size;
 
         // 统计涉及的企业数量
         const uniqueEnterprises = new Set(
-          this.collectedSqls
-            .filter((s) => s.database_type === dbType)
-            .map((s) => s.enterprise_id)
+          this.collectedSqls.filter((s) => s.database_type === dbType).map((s) => s.enterprise_id)
         );
-        summaryByDatabaseType[dbType].enterprises_count =
-          uniqueEnterprises.size;
+        summaryByDatabaseType[dbType].enterprises_count = uniqueEnterprises.size;
       }
 
       // 按企业统计
@@ -3167,31 +2791,21 @@ export class DatabaseMigrationService {
             total_sql_statements: 0,
           };
         }
-        summaryByEnterprise[enterpriseKey].by_database_type[dbType]
-          .total_sql_statements++;
+        summaryByEnterprise[enterpriseKey].by_database_type[dbType].total_sql_statements++;
 
         // 统计每个企业的唯一表数量
         const uniqueTablesForEnterprise = new Set(
-          this.collectedSqls
-            .filter((s) => s.enterprise_id === sql.enterprise_id)
-            .map((s) => s.table_name)
+          this.collectedSqls.filter((s) => s.enterprise_id === sql.enterprise_id).map((s) => s.table_name)
         );
-        summaryByEnterprise[enterpriseKey].total_tables =
-          uniqueTablesForEnterprise.size;
+        summaryByEnterprise[enterpriseKey].total_tables = uniqueTablesForEnterprise.size;
 
         // 统计每个企业按数据库类型的唯一表数量
         const uniqueTablesForEnterpriseByDb = new Set(
           this.collectedSqls
-            .filter(
-              (s) =>
-                s.enterprise_id === sql.enterprise_id &&
-                s.database_type === dbType
-            )
+            .filter((s) => s.enterprise_id === sql.enterprise_id && s.database_type === dbType)
             .map((s) => s.table_name)
         );
-        summaryByEnterprise[enterpriseKey].by_database_type[
-          dbType
-        ].total_tables = uniqueTablesForEnterpriseByDb.size;
+        summaryByEnterprise[enterpriseKey].by_database_type[dbType].total_tables = uniqueTablesForEnterpriseByDb.size;
       }
 
       return {
@@ -3214,46 +2828,23 @@ export class DatabaseMigrationService {
   /**
    * 为单个企业检查表迁移计划
    */
-  private async checkTableForEnterprise(
-    enterprise: Enterprise,
-    schema: TableSchema
-  ): Promise<void> {
+  private async checkTableForEnterprise(enterprise: Enterprise, schema: TableSchema): Promise<void> {
     try {
-      const tableDefinition = JSON.parse(
-        schema.schema_definition
-      ) as TableDefinition;
+      const tableDefinition = JSON.parse(schema.schema_definition) as TableDefinition;
 
       // 获取对应数据库类型的连接
-      const connection = await this.connectionManager.getConnection(
-        enterprise,
-        schema.database_type
-      );
+      const connection = await this.connectionManager.getConnection(enterprise, schema.database_type);
 
       // 根据分区类型处理
       if (schema.partition_type === "store") {
         // 门店分表逻辑
-        await this.checkStorePartitionedTable(
-          connection,
-          tableDefinition,
-          enterprise,
-          schema
-        );
+        await this.checkStorePartitionedTable(connection, tableDefinition, enterprise, schema);
       } else if (schema.partition_type === "time") {
         // 时间分表逻辑
-        await this.checkTimePartitionedTableWithConfig(
-          connection,
-          tableDefinition,
-          schema,
-          enterprise
-        );
+        await this.checkTimePartitionedTableWithConfig(connection, tableDefinition, schema, enterprise);
       } else {
         // 普通表
-        await this.checkTableWithConnection(
-          connection,
-          tableDefinition,
-          enterprise,
-          schema
-        );
+        await this.checkTableWithConnection(connection, tableDefinition, enterprise, schema);
       }
     } catch (error) {
       logger.error(
@@ -3276,10 +2867,7 @@ export class DatabaseMigrationService {
     const tableName = tableDefinition.tableName;
 
     // 检查表是否存在
-    const tableExists = await this.tableExistsWithConnection(
-      connection,
-      tableName
-    );
+    const tableExists = await this.tableExistsWithConnection(connection, tableName);
 
     if (tableDefinition.action === "DROP") {
       if (tableExists) {
@@ -3297,10 +2885,7 @@ export class DatabaseMigrationService {
       }
     } else if (!tableExists) {
       // 表不存在，需要创建
-      const createSql = await this.generateCreateTableSql(
-        tableName,
-        tableDefinition
-      );
+      const createSql = await this.generateCreateTableSql(tableName, tableDefinition);
       await this.collectSql(
         enterprise,
         tableName,
@@ -3332,11 +2917,7 @@ export class DatabaseMigrationService {
       }
     } else {
       // 表存在，检查是否需要修改
-      const alterSqls = await this.generateAlterTableSqls(
-        connection,
-        tableName,
-        tableDefinition
-      );
+      const alterSqls = await this.generateAlterTableSqls(connection, tableName, tableDefinition);
       for (const alterSql of alterSqls) {
         await this.collectSql(
           enterprise,
@@ -3373,10 +2954,7 @@ export class DatabaseMigrationService {
             connection,
             {
               ...tableDefinition,
-              tableName: this.getTableName(
-                tableDefinition.tableName,
-                String(storeId)
-              ),
+              tableName: this.getTableName(tableDefinition.tableName, String(storeId)),
             },
             enterprise,
             schema
@@ -3384,10 +2962,7 @@ export class DatabaseMigrationService {
         }
       }
     } catch (error) {
-      logger.error(
-        `检查企业 ${enterprise.enterprise_name} 门店分表失败:`,
-        error
-      );
+      logger.error(`检查企业 ${enterprise.enterprise_name} 门店分表失败:`, error);
       throw error;
     }
   }
@@ -3402,9 +2977,7 @@ export class DatabaseMigrationService {
     enterprise: Enterprise
   ): Promise<void> {
     if (!schema.time_interval || !schema.time_format) {
-      logger.warn(
-        `时间分表 ${tableDefinition.tableName} 缺少时间配置，跳过检查`
-      );
+      logger.warn(`时间分表 ${tableDefinition.tableName} 缺少时间配置，跳过检查`);
       return;
     }
 
@@ -3442,10 +3015,7 @@ export class DatabaseMigrationService {
 
     while (currentDate <= endDate) {
       const suffix = this.formatDateForTable(currentDate, interval, timeFormat);
-      const partitionTableName = this.getTableName(
-        tableDefinition.tableName,
-        suffix
-      );
+      const partitionTableName = this.getTableName(tableDefinition.tableName, suffix);
 
       await this.checkTableWithConnection(
         connection,
@@ -3468,10 +3038,7 @@ export class DatabaseMigrationService {
   /**
    * 生成创建表的SQL语句
    */
-  private async generateCreateTableSql(
-    tableName: string,
-    tableDefinition: TableDefinition
-  ): Promise<string> {
+  private async generateCreateTableSql(tableName: string, tableDefinition: TableDefinition): Promise<string> {
     let sql = `CREATE TABLE \`${tableName}\` (\n`;
 
     // 处理列定义
@@ -3511,8 +3078,7 @@ export class DatabaseMigrationService {
       sql += `,\n  PRIMARY KEY (\`${primaryKeys.join("`, `")}\`)`;
     }
 
-    sql +=
-      "\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;";
+    sql += "\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;";
 
     return sql;
   }
@@ -3540,28 +3106,17 @@ export class DatabaseMigrationService {
     const alterSqls: Array<{ sql: string; description: string }> = [];
 
     // 获取现有表结构
-    const existingColumns = await this.getExistingColumns(
-      connection,
-      tableName
-    );
-    const existingColumnNames = existingColumns.map(
-      (col: any) => col.COLUMN_NAME
-    );
+    const existingColumns = await this.getExistingColumns(connection, tableName);
+    const existingColumnNames = existingColumns.map((col: any) => col.COLUMN_NAME);
     const definedColumnNames = tableDefinition.columns.map((col) => col.name);
 
     // 检查需要添加的列
-    const columnsToAdd = tableDefinition.columns.filter(
-      (col) => !existingColumnNames.includes(col.name)
-    );
+    const columnsToAdd = tableDefinition.columns.filter((col) => !existingColumnNames.includes(col.name));
 
     for (const column of columnsToAdd) {
-      const sql = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${
-        column.name
-      }\` ${this.getDataType(column)}${!column.allowNull ? " NOT NULL" : ""}${
-        column.defaultValue !== undefined
-          ? ` DEFAULT ${this.getDefaultValue(column)}`
-          : ""
-      }${
+      const sql = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${column.name}\` ${this.getDataType(column)}${
+        !column.allowNull ? " NOT NULL" : ""
+      }${column.defaultValue !== undefined ? ` DEFAULT ${this.getDefaultValue(column)}` : ""}${
         column.comment ? ` COMMENT '${this.escapeComment(column.comment)}'` : ""
       };`;
 
@@ -3572,9 +3127,7 @@ export class DatabaseMigrationService {
     }
 
     // 检查需要删除的列
-    const columnsToRemove = existingColumnNames.filter(
-      (colName) => !definedColumnNames.includes(colName)
-    );
+    const columnsToRemove = existingColumnNames.filter((colName) => !definedColumnNames.includes(colName));
 
     for (const columnName of columnsToRemove) {
       alterSqls.push({
@@ -3591,10 +3144,7 @@ export class DatabaseMigrationService {
   /**
    * 获取现有表的列信息
    */
-  private async getExistingColumns(
-    connection: Sequelize,
-    tableName: string
-  ): Promise<any[]> {
+  private async getExistingColumns(connection: Sequelize, tableName: string): Promise<any[]> {
     const query = `
       SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, 
              COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT
